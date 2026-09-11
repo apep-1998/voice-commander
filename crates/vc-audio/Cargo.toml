@@ -11,6 +11,7 @@ authors.workspace = true
 [dependencies]
 vc-core = { workspace = true }
 rtrb = { workspace = true }
+cpal = { workspace = true }
 rubato = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

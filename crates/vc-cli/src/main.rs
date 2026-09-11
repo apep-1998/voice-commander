@@ -72,6 +72,23 @@ enum Verb {
     },
     /// Re-read the configuration from disk.
     Reload,
+    /// Record briefly and report what the microphone actually produced.
+    ///
+    /// Runs on its own, without the daemon, so it still works when nothing else does.
+    MicTest {
+        /// How long to record.
+        #[arg(long, default_value_t = 3, value_name = "SECONDS")]
+        seconds: u64,
+        /// Device name substring. Defaults to the configured profile's device.
+        #[arg(long, value_name = "NAME")]
+        device: Option<String>,
+        /// Which profile's capture settings to use.
+        #[arg(long, short, default_value = "default")]
+        profile: String,
+        /// Configuration directory.
+        #[arg(long, value_name = "DIR")]
+        config_dir: Option<PathBuf>,
+    },
     /// Check whether the daemon is up.
     Ping,
     /// Ask the daemon to exit.
@@ -104,6 +121,15 @@ fn run(args: Args) -> Result<(), ClientError> {
     if let Verb::Events { follow, events } = args.command {
         return stream_events(&socket, follow, events);
     }
+    if let Verb::MicTest {
+        seconds,
+        device,
+        profile,
+        config_dir,
+    } = args.command
+    {
+        return mic_test(seconds, device, &profile, config_dir);
+    }
 
     let want_json = matches!(args.command, Verb::Status { json: true });
     let command = match args.command {
@@ -115,7 +141,7 @@ fn run(args: Args) -> Result<(), ClientError> {
         Verb::Reload => Cmd::Reload,
         Verb::Ping => Cmd::Ping,
         Verb::Shutdown => Cmd::Shutdown,
-        Verb::Events { .. } => unreachable!("handled above"),
+        Verb::Events { .. } | Verb::MicTest { .. } => unreachable!("handled above"),
     };
     let response = Client::connect(&socket, TIMEOUT)?.send(command)?;
     report(&response, want_json);
@@ -191,6 +217,76 @@ fn print_status(status: &vc_ipc::DaemonStatus, want_json: bool) {
             status.config_warnings
         );
     }
+}
+
+/// Check the microphone without involving the daemon.
+///
+/// Deliberately standalone: this is what a user runs when recording produces nothing, and it
+/// would be useless if it needed the very thing that is not working.
+fn mic_test(
+    seconds: u64,
+    device: Option<String>,
+    profile_name: &str,
+    config_dir: Option<PathBuf>,
+) -> Result<(), ClientError> {
+    let dir = config_dir.unwrap_or_else(vc_core::paths::config_dir);
+    let loaded = match vc_core::Config::load_from_dir(&dir) {
+        Ok(loaded) => loaded,
+        Err(error) => {
+            eprintln!("configuration: {error}");
+            std::process::exit(6);
+        }
+    };
+
+    let Some(profile) = loaded.config.profiles.get(profile_name) else {
+        eprintln!("no profile named {profile_name:?}");
+        std::process::exit(3);
+    };
+
+    let selector = match device {
+        Some(name) => vc_core::config::DeviceSelector::Match(name),
+        None => profile.capture.device.clone(),
+    };
+
+    println!("recording for {seconds}s — say something...");
+    let report = match vc_audio::mic_test(
+        &selector,
+        loaded.config.audio.sample_rate,
+        &loaded.config.levels,
+        Duration::from_secs(seconds),
+    ) {
+        Ok(report) => report,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(5);
+        }
+    };
+
+    println!();
+    println!("  device:  {}", report.device.name);
+    println!(
+        "  format:  {} Hz, {} channel(s)",
+        report.device.sample_rate, report.device.channels
+    );
+    println!("  peak:    {:.1} dBFS", report.peak_dbfs);
+    println!("  average: {:.1} dBFS", report.mean_rms_dbfs);
+    println!(
+        "  speech:  {:.1}s of {:.1}s",
+        report.speech_ms as f64 / 1000.0,
+        report.duration.as_secs_f64()
+    );
+    if report.clipped_samples > 0 {
+        println!("  clipped: {} samples", report.clipped_samples);
+    }
+    if report.dropped_samples > 0 {
+        println!(
+            "  dropped: {} samples (this machine could not keep up)",
+            report.dropped_samples
+        );
+    }
+    println!();
+    println!("{}", report.verdict());
+    Ok(())
 }
 
 fn stream_events(

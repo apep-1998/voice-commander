@@ -8,12 +8,19 @@
 //! Everything except the backend itself is therefore testable without a microphone, which is
 //! why [`SyntheticSource`] exists and why no test in this crate needs sound hardware.
 
+pub mod cpal_backend;
 pub mod level;
+pub mod mictest;
 pub mod preroll;
 pub mod resample;
 pub mod source;
 
-pub use level::{LevelMeter, LevelSnapshot, LevelTotals};
+pub use cpal_backend::{CpalHost, CpalSource};
+pub use level::{summary_warning, LevelMeter, LevelSnapshot, LevelTotals};
+pub use mictest::{run as mic_test, MicReport};
 pub use preroll::PreRollBuffer;
 pub use resample::Resampler;
-pub use source::{AudioError, AudioSource, DeviceInfo, SampleSink, SyntheticSource};
+pub use source::{
+    channel, AudioError, AudioHost, AudioSource, DeviceInfo, SampleSink, SampleSource,
+    SyntheticSource,
+};
