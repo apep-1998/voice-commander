@@ -1,6 +1,6 @@
 [package]
-name = "vc-stt"
-description = "Speech-to-text transcriber trait and built-in adapters for voice-commander"
+name = "vc-exec"
+description = "Process execution, retry policy and timeouts shared by transcribers and sinks"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,15 +10,13 @@ authors.workspace = true
 
 [dependencies]
 vc-core = { workspace = true }
-vc-exec = { workspace = true }
-async-trait = { workspace = true }
+tokio = { workspace = true, features = ["process", "io-util"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-tokio = { workspace = true, features = ["fs"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-toml = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

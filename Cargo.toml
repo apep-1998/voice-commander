@@ -6,6 +6,7 @@ members = [
     "crates/vc-stt",
     "crates/vc-sinks",
     "crates/vc-ipc",
+    "crates/vc-exec",
     "crates/vc-daemon",
     "crates/vc-cli",
 ]
@@ -26,6 +27,7 @@ vc-audio = { path = "crates/vc-audio" }
 vc-stt = { path = "crates/vc-stt" }
 vc-sinks = { path = "crates/vc-sinks" }
 vc-ipc = { path = "crates/vc-ipc" }
+vc-exec = { path = "crates/vc-exec" }
 
 serde = { version = "1.0.229", features = ["derive"] }
 toml = "1.1.6"
@@ -35,6 +37,7 @@ tempfile = "3.27.0"
 rtrb = "0.3.2"
 cpal = "0.16.0"
 hound = "3.5.1"
+async-trait = "0.1.89"
 rubato = "0.16.2"
 anyhow = "1.0.100"
 clap = { version = "4.5.51", features = ["derive"] }
