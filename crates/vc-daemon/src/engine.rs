@@ -178,6 +178,9 @@ impl Engine {
         if let Err(error) = self.storage.prepare() {
             error!(%error, "cannot prepare the recordings directory");
         }
+        // Once at startup, then after each session. Not on a timer: the only thing that
+        // grows this directory is recording into it.
+        self.sweep();
 
         loop {
             match commands.recv_timeout(TICK) {
@@ -381,10 +384,6 @@ impl Engine {
         if active.recorder.phase() != Phase::Recording {
             return;
         }
-        if !self.config.feedback.enabled || !self.config.feedback.listening {
-            return;
-        }
-
         let interval = Duration::from_millis(u64::from(self.config.feedback.level_interval_ms));
         if self.last_level.elapsed() < interval {
             return;
@@ -599,6 +598,16 @@ impl Engine {
         });
 
         self.maybe_close_after_recording(&profile);
+        self.sweep();
+    }
+
+    /// Apply the retention limits, if there are any.
+    fn sweep(&self) {
+        crate::retention::sweep(
+            self.storage.root(),
+            &self.config.storage,
+            std::time::SystemTime::now(),
+        );
     }
 
     /// Send a finished session to the pipeline.
@@ -792,6 +801,12 @@ impl Engine {
     }
 
     fn send(&self, envelope: Envelope) {
+        // Suppressed at the source rather than filtered downstream: a user who does not want
+        // a level meter should not be paying to produce twenty measurements a second for
+        // nobody to read.
+        if !crate::feedback::Filter::new(&self.config.feedback).allows(&envelope.event) {
+            return;
+        }
         if let Ok(line) = envelope.to_ndjson() {
             let _ = self.events.send(line);
         }

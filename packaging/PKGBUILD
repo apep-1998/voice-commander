@@ -1,0 +1,64 @@
+# Maintainer: Arsham <arshammoh1998@gmail.com>
+pkgname=voice-commander
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Push-to-talk voice pipeline for Wayland — hold a key, talk, release, and route the audio through configurable speech-to-text and callbacks"
+arch=('x86_64' 'aarch64')
+url="https://github.com/apep-1998/voice-commander"
+license=('MIT')
+depends=('alsa-lib')
+makedepends=('cargo')
+# None of these are required to record. They are what the optional callbacks drive:
+# wl-clipboard for the clipboard sink, wtype for typing into the focused window,
+# libnotify for notifications.
+optdepends=(
+  'wl-clipboard: the clipboard callback'
+  'wtype: typing the transcript into the focused window'
+  'ydotool: typing, as an alternative to wtype'
+  'libnotify: desktop notifications'
+  'pipewire: the expected audio server'
+)
+source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+prepare() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release --workspace
+}
+
+check() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  # The suite needs neither a microphone nor a network, so it runs in a clean chroot.
+  cargo test --frozen --workspace
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  install -Dm755 "target/release/voice-commander"  "$pkgdir/usr/bin/voice-commander"
+  install -Dm755 "target/release/voice-commanderd" "$pkgdir/usr/bin/voice-commanderd"
+
+  # The shipped unit points at ~/.local/bin for people who build it by hand; a packaged
+  # install puts the binary in /usr/bin.
+  sed 's|%h/.local/bin/voice-commanderd|/usr/bin/voice-commanderd|' \
+    "packaging/voice-commander.service" > "$srcdir/voice-commander.service"
+  install -Dm644 "$srcdir/voice-commander.service" \
+    "$pkgdir/usr/lib/systemd/user/voice-commander.service"
+
+  install -Dm644 "LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 "config/example.toml" \
+    "$pkgdir/usr/share/doc/$pkgname/example-config.toml"
+  install -Dm644 "packaging/hyprland.conf" \
+    "$pkgdir/usr/share/doc/$pkgname/hyprland.conf"
+  for doc in README.md docs/installation.md docs/configuration.md docs/recipes.md docs/events.md; do
+    install -Dm644 "$doc" "$pkgdir/usr/share/doc/$pkgname/$(basename "$doc")"
+  done
+}

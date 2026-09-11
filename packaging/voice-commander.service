@@ -8,6 +8,9 @@ PartOf=graphical-session.target
 
 [Service]
 Type=simple
+# systemd wants an absolute path, and %h expands to the user's home. This copy is for a
+# manual `install -Dm755 target/release/voice-commanderd ~/.local/bin/` — the PKGBUILD
+# rewrites it to /usr/bin when packaging.
 ExecStart=%h/.local/bin/voice-commanderd
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure

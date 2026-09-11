@@ -411,4 +411,25 @@ jq -r 'select(.segments[].stop_reason == "watchdog") | .id' \
 - `speech_in_pre_roll_ms` near your `pre_roll_ms` → raise it, speech is still being clipped.
 - `speech_in_pre_roll_ms` consistently `0` → lower it, it is only costing memory.
 
-A `voice-commander stats` command that does this for you is planned.
+Or just run `voice-commander stats`, which does all of this and says what it thinks:
+
+```console
+$ voice-commander stats
+214 recordings
+  total audio:   38.2 minutes
+  typical length: 4.1s (longest 47.0s)
+  continued:     31 (14%)
+     you press again within 1420ms, 90% of the time
+  speech caught before the keypress: up to 480ms (window is 500ms)
+  transcribed:   214 (3 failed, typically 780ms)
+  callbacks:     428 run, 2 failed
+
+suggestions:
+  capture.pre_roll_ms: speech regularly fills the whole 500ms pre-roll window
+    (90th percentile 480ms) — words are probably still being clipped; try 1000ms
+  session.cooldown_ms: continuations arrive up to 1420ms after release
+    (90th percentile of 31) — a cooldown_ms comfortably above that catches them all
+```
+
+It stays quiet until there are at least ten recordings: advice from four is noise wearing a
+suit.
