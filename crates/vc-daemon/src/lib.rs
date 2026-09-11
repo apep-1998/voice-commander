@@ -6,9 +6,11 @@
 //! the accept loop.
 
 pub mod engine;
+pub mod feedback;
 pub mod inflight;
 pub mod listener;
 pub mod pipeline;
+pub mod presenters;
 pub mod recorder;
 pub mod state;
 pub mod storage;
@@ -46,6 +48,8 @@ pub struct Daemon {
     state: Arc<Mutex<State>>,
     events: broadcast::Sender<String>,
     socket: PathBuf,
+    /// Where recordings and the event log live.
+    data_dir: PathBuf,
     /// Joined on shutdown so the capture thread gets to finish writing whatever it was
     /// recording, rather than having the process exit out from under it.
     capture: Option<std::thread::JoinHandle<()>>,
@@ -90,6 +94,7 @@ impl Daemon {
         // is always called from inside the runtime.
         let runtime = tokio::runtime::Handle::try_current()
             .context("the daemon must be constructed inside a tokio runtime")?;
+        let root_for_daemon = root.clone();
         let in_flight = inflight::InFlight::new();
         let (engine_tx, engine_status, capture) = engine::spawn(
             loaded.config.clone(),
@@ -110,6 +115,7 @@ impl Daemon {
             ))),
             events,
             socket,
+            data_dir: root_for_daemon,
             capture: Some(capture),
             in_flight,
         })
@@ -147,9 +153,19 @@ impl Daemon {
         // Every connection task watches this. Dropping the listener is not enough to end
         // them: a subscriber is parked on the event channel, not on the socket.
         let (stop_tx, stop_rx) = watch::channel(false);
-        let result = self.accept_loop(listener, shutdown, stop_rx).await;
-        let _ = stop_tx.send(true);
 
+        // Presenters subscribe to the same bus everything else reads, and run as their own
+        // tasks so a slow one falls behind and loses events rather than stalling a recording.
+        let presenters = {
+            let guard = self.state.lock().await;
+            presenters::start(&guard.config, &self.data_dir, &self.events, stop_rx.clone())
+        };
+        let result = self.accept_loop(listener, shutdown, stop_rx).await;
+
+        // Deliberately not signalling `stop` yet. Everything below still produces events —
+        // the capture thread finalises its last recording, the pipelines finish and report —
+        // and telling the presenters to stop first would throw exactly those away.
+        //
         // Let the capture thread finish first: it may be part-way through writing a
         // recording, and exiting out from under it would lose what the user just said.
         {
@@ -164,6 +180,13 @@ impl Daemon {
         // the way out, so this has to come second — and without it, a transcript and a set
         // of callback results that already completed would never reach session.json.
         self.in_flight.drain(SHUTDOWN_GRACE).await;
+
+        // Then let the presenters flush. The event log in particular has the last events of
+        // the session sitting in a buffer.
+        let _ = stop_tx.send(true);
+        for task in presenters {
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), task).await;
+        }
 
         listener::cleanup(&self.socket);
         result

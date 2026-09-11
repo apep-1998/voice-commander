@@ -47,19 +47,20 @@ pub async fn run(mut job: Job) {
     let started = Instant::now();
     let session = job.record.id.clone();
     let profile = job.profile_name.clone();
+    let emitter = Emitter {
+        events: job.events.clone(),
+        session: session.clone(),
+        profile: profile.clone(),
+        filter: crate::feedback::Filter::new(&job.config.feedback),
+    };
 
     let planned = plan(&job);
-    emit(
-        &job.events,
-        &session,
-        &profile,
-        Event::PipelineStarted {
-            transcriber: job.profile.transcriber.clone(),
-            sinks: planned.clone(),
-        },
-    );
+    emitter.send(Event::PipelineStarted {
+        transcriber: job.profile.transcriber.clone(),
+        sinks: planned.clone(),
+    });
 
-    let (transcript, skip) = transcribe(&job, &session, &profile).await;
+    let (transcript, skip) = transcribe(&job, &emitter).await;
 
     // Write the transcript beside the audio, so a callback can be handed a path rather than
     // a shell-quoted blob of the user's speech.
@@ -92,7 +93,7 @@ pub async fn run(mut job: Job) {
         context,
         job.profile.sink_mode,
         skip,
-        sink_reporter(&job.events, &session, &profile),
+        sink_reporter(&emitter),
     )
     .await;
 
@@ -126,18 +127,13 @@ pub async fn run(mut job: Job) {
 
     let total_ms = started.elapsed().as_millis() as u64;
     info!(session = %session, ok, failed, skipped, total_ms, "pipeline finished");
-    emit(
-        &job.events,
-        &session,
-        &profile,
-        Event::PipelineFinished {
-            ok,
-            failed,
-            skipped,
-            total_ms,
-            outcome,
-        },
-    );
+    emitter.send(Event::PipelineFinished {
+        ok,
+        failed,
+        skipped,
+        total_ms,
+        outcome,
+    });
 }
 
 /// The complete list of callbacks, announced before any of them run.
@@ -183,11 +179,9 @@ fn build_plan(job: &Job) -> Vec<Planned> {
 ///
 /// Returns the transcript and, when there is none, the reason — so a skipped callback can say
 /// *why* rather than merely being greyed out.
-async fn transcribe(
-    job: &Job,
-    session: &SessionId,
-    profile: &str,
-) -> (Option<Transcript>, Option<SkipReason>) {
+async fn transcribe(job: &Job, emitter: &Emitter) -> (Option<Transcript>, Option<SkipReason>) {
+    let session = &emitter.session;
+    let profile = emitter.profile.as_str();
     let Some(name) = &job.profile.transcriber else {
         // Not a failure: a profile that records straight to a callback is a first-class case.
         return (None, Some(SkipReason::NoTranscript));
@@ -198,26 +192,16 @@ async fn transcribe(
             transcriber = name,
             "transcriber is configured but was not built"
         );
-        emit(
-            &job.events,
-            session,
-            profile,
-            Event::TranscribeFailed {
-                error: format!("transcriber {name:?} could not be built"),
-                latency_ms: 0,
-            },
-        );
+        emitter.send(Event::TranscribeFailed {
+            error: format!("transcriber {name:?} could not be built"),
+            latency_ms: 0,
+        });
         return (None, Some(SkipReason::TranscriptionFailed));
     };
 
-    emit(
-        &job.events,
-        session,
-        profile,
-        Event::TranscribeStarted {
-            transcriber: name.clone(),
-        },
-    );
+    emitter.send(Event::TranscribeStarted {
+        transcriber: name.clone(),
+    });
 
     let request = TranscribeRequest {
         audio_path: job.record.audio.path.clone(),
@@ -253,16 +237,11 @@ async fn transcribe(
     match result {
         Ok(transcript) => {
             info!(session = %session, chars = transcript.text.chars().count(), latency_ms, "transcribed");
-            emit(
-                &job.events,
-                session,
-                profile,
-                Event::TranscribeDone {
-                    chars: transcript.text.chars().count(),
-                    latency_ms,
-                    language: transcript.language.clone(),
-                },
-            );
+            emitter.send(Event::TranscribeDone {
+                chars: transcript.text.chars().count(),
+                latency_ms,
+                language: transcript.language.clone(),
+            });
             // An empty transcript is a real answer — a recording of silence has no text in
             // it — but a callback expecting text still has nothing to work with.
             let skip = transcript
@@ -273,24 +252,14 @@ async fn transcribe(
         }
         Err(error) => {
             warn!(session = %session, %error, latency_ms, "transcription failed");
-            emit(
-                &job.events,
-                session,
-                profile,
-                Event::TranscribeFailed {
-                    error: error.to_string(),
-                    latency_ms,
-                },
-            );
-            emit(
-                &job.events,
-                session,
-                profile,
-                Event::Error {
-                    stage: Stage::Transcription,
-                    message: error.to_string(),
-                },
-            );
+            emitter.send(Event::TranscribeFailed {
+                error: error.to_string(),
+                latency_ms,
+            });
+            emitter.send(Event::Error {
+                stage: Stage::Transcription,
+                message: error.to_string(),
+            });
             (None, Some(SkipReason::TranscriptionFailed))
         }
     }
@@ -309,17 +278,10 @@ async fn write_transcript(record: &SessionRecord, text: &str) -> Option<PathBuf>
 }
 
 /// Turn fan-out progress into events.
-fn sink_reporter(
-    events: &broadcast::Sender<String>,
-    session: &SessionId,
-    profile: &str,
-) -> Arc<dyn Fn(Progress) + Send + Sync> {
-    let events = events.clone();
-    let session = session.clone();
-    let profile = profile.to_owned();
-
+fn sink_reporter(emitter: &Emitter) -> Arc<dyn Fn(Progress) + Send + Sync> {
+    let emitter = emitter.clone();
     Arc::new(move |progress| {
-        let event = match progress {
+        emitter.send(match progress {
             Progress::Started { id, name } => Event::SinkStarted { id, name },
             Progress::Finished { record } => Event::SinkFinished {
                 id: record.id,
@@ -328,20 +290,36 @@ fn sink_reporter(
                 latency_ms: record.latency_ms,
                 attempts: record.attempts,
             },
-        };
-        emit(&events, &session, &profile, event);
+        });
     })
 }
 
-fn emit(events: &broadcast::Sender<String>, session: &SessionId, profile: &str, event: Event) {
-    if let Ok(line) = Envelope::for_session(
-        time::OffsetDateTime::now_utc(),
-        session.clone(),
-        profile,
-        event,
-    )
-    .to_ndjson()
-    {
-        let _ = events.send(line);
+/// Emits events for one session, already knowing which of them are wanted.
+///
+/// Carrying the session, the profile and the feedback filter together means no call site has
+/// to remember all three, and no path can accidentally bypass the filter.
+#[derive(Clone)]
+struct Emitter {
+    events: broadcast::Sender<String>,
+    session: SessionId,
+    profile: String,
+    filter: crate::feedback::Filter,
+}
+
+impl Emitter {
+    fn send(&self, event: Event) {
+        if !self.filter.allows(&event) {
+            return;
+        }
+        if let Ok(line) = Envelope::for_session(
+            time::OffsetDateTime::now_utc(),
+            self.session.clone(),
+            self.profile.clone(),
+            event,
+        )
+        .to_ndjson()
+        {
+            let _ = self.events.send(line);
+        }
     }
 }

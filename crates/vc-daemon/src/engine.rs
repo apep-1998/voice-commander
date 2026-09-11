@@ -381,10 +381,6 @@ impl Engine {
         if active.recorder.phase() != Phase::Recording {
             return;
         }
-        if !self.config.feedback.enabled || !self.config.feedback.listening {
-            return;
-        }
-
         let interval = Duration::from_millis(u64::from(self.config.feedback.level_interval_ms));
         if self.last_level.elapsed() < interval {
             return;
@@ -792,6 +788,12 @@ impl Engine {
     }
 
     fn send(&self, envelope: Envelope) {
+        // Suppressed at the source rather than filtered downstream: a user who does not want
+        // a level meter should not be paying to produce twenty measurements a second for
+        // nobody to read.
+        if !crate::feedback::Filter::new(&self.config.feedback).allows(&envelope.event) {
+            return;
+        }
         if let Ok(line) = envelope.to_ndjson() {
             let _ = self.events.send(line);
         }
