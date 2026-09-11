@@ -424,7 +424,8 @@ working nine-line shell indicator is at the bottom of that file.
 | `mic-test`, `status`, `events --follow`, `reload` | ✅ |
 | `command` transcriber | ✅ |
 | `openai` and `http` transcribers | ✅ |
-| Callbacks (`command`, `http`, `clipboard`, `type`, `notify`, `file`) | in progress |
+| Callbacks — `command`, and the full fan-out with retries and skip reasons | ✅ |
+| Callbacks — `http`, `clipboard`, `type`, `notify`, `file` | in progress |
 | `stats`, retention, `config init` | planned |
 | Graphical indicator | deliberately deferred — build one on the event stream |
 

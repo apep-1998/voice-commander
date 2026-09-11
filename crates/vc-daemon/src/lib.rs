@@ -7,6 +7,7 @@
 
 pub mod engine;
 pub mod listener;
+pub mod pipeline;
 pub mod recorder;
 pub mod state;
 pub mod storage;
@@ -76,8 +77,16 @@ impl Daemon {
         let root = data_dir
             .or_else(|| loaded.config.storage.dir.clone())
             .unwrap_or_else(vc_core::paths::data_dir);
-        let (engine_tx, engine_status, capture) =
-            engine::spawn(loaded.config.clone(), Storage::new(root), events.clone())?;
+        // The capture thread needs a handle to spawn pipeline tasks onto, and `Daemon::new`
+        // is always called from inside the runtime.
+        let runtime = tokio::runtime::Handle::try_current()
+            .context("the daemon must be constructed inside a tokio runtime")?;
+        let (engine_tx, engine_status, capture) = engine::spawn(
+            loaded.config.clone(),
+            Storage::new(root),
+            events.clone(),
+            runtime,
+        )?;
 
         Ok(Self {
             state: Arc::new(Mutex::new(State::new(

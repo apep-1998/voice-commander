@@ -16,11 +16,13 @@ use time::OffsetDateTime;
 use tokio::sync::{broadcast, watch};
 use tracing::{debug, error, info, warn};
 
+use std::sync::Arc;
 use vc_audio::level::{LevelMeter, LevelSnapshot};
 use vc_audio::source::{channel, AudioSource, SampleSource};
 use vc_audio::{CpalHost, CpalSource, PreRollBuffer};
+
 use vc_core::config::{CaptureMode, Config, Profile};
-use vc_core::event::{DeviceCloseReason, Event, PlannedSink, Stage};
+use vc_core::event::{DeviceCloseReason, Event, Stage};
 use vc_core::session::{
     AudioSummary, InputWarningKind, Outcome, SessionId, SessionRecord, StopReason,
 };
@@ -75,6 +77,17 @@ struct Active {
     recorder: Recorder,
 }
 
+/// A finished session, handed to the pipeline.
+///
+/// The capture thread does not run the pipeline itself: transcription and callbacks are
+/// async and can take tens of seconds, and blocking the thread that owns the microphone
+/// would mean the next recording could not start until a webhook replied.
+pub(crate) struct Handoff {
+    pub record: SessionRecord,
+    pub profile_name: String,
+    pub profile: Profile,
+}
+
 /// Start the engine on its own thread.
 ///
 /// Returns an error rather than panicking if the thread cannot be created: the daemon can
@@ -84,6 +97,7 @@ pub fn spawn(
     config: Config,
     storage: Storage,
     events: broadcast::Sender<String>,
+    runtime: tokio::runtime::Handle,
 ) -> anyhow::Result<(
     Sender<Command>,
     watch::Receiver<Status>,
@@ -95,7 +109,20 @@ pub fn spawn(
     let handle = std::thread::Builder::new()
         .name("vc-capture".to_owned())
         .spawn(move || {
+            let (transcribers, stt_errors) = vc_stt::Registry::from_config(&config);
+            for error in stt_errors {
+                error!(%error, "a transcriber could not be built");
+            }
+            let (sinks, sink_errors) = vc_sinks::Registry::from_config(&config);
+            for error in sink_errors {
+                error!(%error, "a callback could not be built");
+            }
+
             Engine {
+                shared: Arc::new(config.clone()),
+                transcribers,
+                sinks,
+                runtime,
                 config,
                 storage,
                 events,
@@ -120,6 +147,12 @@ pub fn spawn(
 
 struct Engine {
     config: Config,
+    /// The same configuration, shareable with pipeline tasks without copying it per session.
+    shared: Arc<Config>,
+    transcribers: vc_stt::Registry,
+    sinks: vc_sinks::Registry,
+    /// Where pipeline tasks are spawned. The capture thread is not itself async.
+    runtime: tokio::runtime::Handle,
     storage: Storage,
     events: broadcast::Sender<String>,
     status: watch::Sender<Status>,
@@ -179,7 +212,19 @@ impl Engine {
             }
             Command::Cancel => self.cancel(),
             Command::Reconfigure(config) => {
-                self.config = *config;
+                let config = *config;
+                let (transcribers, stt_errors) = vc_stt::Registry::from_config(&config);
+                for error in stt_errors {
+                    error!(%error, "a transcriber could not be built");
+                }
+                let (sinks, sink_errors) = vc_sinks::Registry::from_config(&config);
+                for error in sink_errors {
+                    error!(%error, "a callback could not be built");
+                }
+                self.transcribers = transcribers;
+                self.sinks = sinks;
+                self.shared = Arc::new(config.clone());
+                self.config = config;
                 // A reload can change the device or the pre-roll window, so the old buffer's
                 // contents are no longer lookback for the new configuration.
                 self.close_device(DeviceCloseReason::Shutdown);
@@ -540,47 +585,30 @@ impl Engine {
             },
         );
 
-        // The pipeline — transcription and callbacks — arrives in later PRs. The plan is
-        // announced now so that an indicator built against the event contract already sees
-        // the right shape, and so the gap is visible rather than silent.
-        self.emit(
-            &id,
-            &profile_name,
-            Event::PipelineStarted {
-                transcriber: profile.transcriber.clone(),
-                sinks: self.planned_sinks(&profile),
-            },
-        );
-        self.emit(
-            &id,
-            &profile_name,
-            Event::PipelineFinished {
-                ok: 0,
-                failed: 0,
-                skipped: profile.sinks.len(),
-                total_ms: 0,
-                outcome: Outcome::Ok,
-            },
-        );
+        // Hand off and return. The pipeline runs detached so the next recording can start
+        // while this one is still uploading — someone who says two things in quick
+        // succession should not find the second blocked on the first one's webhook.
+        self.dispatch(Handoff {
+            record,
+            profile_name,
+            profile: profile.clone(),
+        });
 
         self.maybe_close_after_recording(&profile);
     }
 
-    fn planned_sinks(&self, profile: &Profile) -> Vec<PlannedSink> {
-        profile
-            .sinks
-            .iter()
-            .enumerate()
-            .filter_map(|(index, name)| {
-                let sink = self.config.sinks.get(name)?;
-                Some(PlannedSink {
-                    id: u32::try_from(index).unwrap_or(u32::MAX),
-                    name: name.clone(),
-                    kind: sink.kind.type_name().to_owned(),
-                    requires_text: sink.needs_text(),
-                })
-            })
-            .collect()
+    /// Send a finished session to the pipeline.
+    fn dispatch(&self, handoff: Handoff) {
+        let job = crate::pipeline::Job {
+            record: handoff.record,
+            profile_name: handoff.profile_name,
+            profile: handoff.profile,
+            config: Arc::clone(&self.shared),
+            transcribers: self.transcribers.clone(),
+            sinks: self.sinks.clone(),
+            events: self.events.clone(),
+        };
+        self.runtime.spawn(crate::pipeline::run(job));
     }
 
     fn finish_on_shutdown(&mut self) {
