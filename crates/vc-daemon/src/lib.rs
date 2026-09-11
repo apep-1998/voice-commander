@@ -5,8 +5,11 @@
 //! uses. A test that talks to a mock instead of the real accept loop proves nothing about
 //! the accept loop.
 
+pub mod engine;
 pub mod listener;
+pub mod recorder;
 pub mod state;
+pub mod storage;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -21,6 +24,7 @@ use vc_core::Envelope;
 
 use listener::Directive;
 use state::State;
+use storage::Storage;
 
 /// How many events a subscriber may fall behind before it starts losing them.
 ///
@@ -34,6 +38,9 @@ pub struct Daemon {
     state: Arc<Mutex<State>>,
     events: broadcast::Sender<String>,
     socket: PathBuf,
+    /// Joined on shutdown so the capture thread gets to finish writing whatever it was
+    /// recording, rather than having the process exit out from under it.
+    capture: Option<std::thread::JoinHandle<()>>,
 }
 
 impl std::fmt::Debug for Daemon {
@@ -47,6 +54,16 @@ impl std::fmt::Debug for Daemon {
 impl Daemon {
     /// Load configuration and prepare to serve, without binding anything yet.
     pub fn new(config_dir: &Path, socket: PathBuf) -> anyhow::Result<Self> {
+        Self::with_storage(config_dir, socket, None)
+    }
+
+    /// As [`Daemon::new`], but with recordings written somewhere other than the XDG data
+    /// directory. Tests use this so a run never touches the user's real recordings.
+    pub fn with_storage(
+        config_dir: &Path,
+        socket: PathBuf,
+        data_dir: Option<PathBuf>,
+    ) -> anyhow::Result<Self> {
         let loaded = Config::load_from_dir(config_dir).context("loading configuration")?;
 
         let warnings: Vec<String> = loaded.warnings.iter().map(ToString::to_string).collect();
@@ -55,15 +72,25 @@ impl Daemon {
         }
 
         let (events, _) = broadcast::channel(EVENT_BUFFER);
+
+        let root = data_dir
+            .or_else(|| loaded.config.storage.dir.clone())
+            .unwrap_or_else(vc_core::paths::data_dir);
+        let (engine_tx, engine_status, capture) =
+            engine::spawn(loaded.config.clone(), Storage::new(root), events.clone())?;
+
         Ok(Self {
             state: Arc::new(Mutex::new(State::new(
                 loaded.config,
                 warnings,
                 socket.clone(),
                 config_dir.to_owned(),
+                engine_tx,
+                engine_status,
             ))),
             events,
             socket,
+            capture: Some(capture),
         })
     }
 
@@ -81,7 +108,10 @@ impl Daemon {
     ///
     /// Taking an explicit shutdown future rather than only listening for signals is what lets
     /// a test stop the daemon deterministically instead of by killing a process.
-    pub async fn run(self, shutdown: impl std::future::Future<Output = ()>) -> anyhow::Result<()> {
+    pub async fn run(
+        mut self,
+        shutdown: impl std::future::Future<Output = ()>,
+    ) -> anyhow::Result<()> {
         let listener = listener::bind(&self.socket).await?;
         info!(socket = %self.socket.display(), "listening");
 
@@ -98,6 +128,17 @@ impl Daemon {
         let (stop_tx, stop_rx) = watch::channel(false);
         let result = self.accept_loop(listener, shutdown, stop_rx).await;
         let _ = stop_tx.send(true);
+
+        // Let the capture thread finish first: it may be part-way through writing a
+        // recording, and exiting out from under it would lose what the user just said.
+        {
+            let guard = self.state.lock().await;
+            let _ = guard.engine.send(engine::Command::Shutdown);
+        }
+        if let Some(capture) = self.capture.take() {
+            let _ = tokio::task::spawn_blocking(move || capture.join()).await;
+        }
+
         listener::cleanup(&self.socket);
         result
     }

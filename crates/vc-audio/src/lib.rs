@@ -14,6 +14,7 @@ pub mod mictest;
 pub mod preroll;
 pub mod resample;
 pub mod source;
+pub mod wav;
 
 pub use cpal_backend::{CpalHost, CpalSource};
 pub use level::{summary_warning, LevelMeter, LevelSnapshot, LevelTotals};

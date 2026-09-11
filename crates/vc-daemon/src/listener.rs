@@ -194,29 +194,46 @@ async fn handle(
         Command::Reload => (reload(&mut guard, events), Directive::Continue),
         Command::Shutdown => (Response::Accepted { session: None }, Directive::Shutdown),
 
-        // Recording itself arrives in PR 7. Until then the profile is still resolved, so
-        // that a typo in a keybind is reported now rather than being masked by the
-        // not-implemented reply.
-        Command::Start { profile } | Command::Stop { profile } | Command::Toggle { profile } => {
-            if guard.knows_profile(&profile) {
-                (
-                    Response::Error {
-                        code: ErrorCode::NotImplemented,
-                        message: format!(
-                            "profile {profile:?} is configured, but recording is not \
-                             implemented in this build yet"
-                        ),
-                    },
-                    Directive::Continue,
-                )
-            } else {
-                (unknown_profile(&profile, &guard), Directive::Continue)
-            }
+        // The profile is resolved here rather than on the capture thread so that a typo in
+        // a keybind comes back as an error the user can see, instead of a log line on a
+        // thread nobody is watching.
+        Command::Start { profile } => dispatch(&guard, &profile, |name| {
+            crate::engine::Command::Start { profile: name }
+        }),
+        Command::Stop { profile } => dispatch(&guard, &profile, |name| {
+            crate::engine::Command::Stop { profile: name }
+        }),
+        Command::Toggle { profile } => dispatch(&guard, &profile, |name| {
+            crate::engine::Command::Toggle { profile: name }
+        }),
+        Command::Cancel => {
+            let _ = guard.engine.send(crate::engine::Command::Cancel);
+            (Response::Accepted { session: None }, Directive::Continue)
         }
-        Command::Cancel => (
+    }
+}
+
+/// Validate the profile, then hand the command to the capture thread.
+fn dispatch(
+    state: &State,
+    profile: &str,
+    build: impl FnOnce(String) -> crate::engine::Command,
+) -> (Response, Directive) {
+    if !state.knows_profile(profile) {
+        return (unknown_profile(profile, state), Directive::Continue);
+    }
+    match state.engine.send(build(profile.to_owned())) {
+        Ok(()) => (
+            // The session id is not known yet — the capture thread assigns it. A keybind
+            // ignores this reply anyway; what matters is that it comes back immediately
+            // rather than waiting for a device to open.
+            Response::Accepted { session: None },
+            Directive::Continue,
+        ),
+        Err(error) => (
             Response::Error {
-                code: ErrorCode::NotImplemented,
-                message: "recording is not implemented in this build yet".to_owned(),
+                code: ErrorCode::Internal,
+                message: format!("the capture thread is not running: {error}"),
             },
             Directive::Continue,
         ),
@@ -234,6 +251,11 @@ fn reload(state: &mut State, events: &broadcast::Sender<String>) -> Response {
             for warning in &warnings {
                 warn!("{warning}");
             }
+            let _ = state
+                .engine
+                .send(crate::engine::Command::Reconfigure(Box::new(
+                    loaded.config.clone(),
+                )));
             state.config = loaded.config;
             state.config_warnings.clone_from(&warnings);
             info!(warnings = warnings.len(), "configuration reloaded");

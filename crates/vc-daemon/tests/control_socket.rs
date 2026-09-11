@@ -38,7 +38,12 @@ impl Harness {
         // Inside the temp dir rather than the real runtime directory, so a test run never
         // collides with the daemon the developer actually uses.
         let socket = dir.path().join("vc.sock");
-        let daemon = vc_daemon::Daemon::new(dir.path(), socket.clone()).expect("daemon");
+        let daemon = vc_daemon::Daemon::with_storage(
+            dir.path(),
+            socket.clone(),
+            Some(dir.path().join("data")),
+        )
+        .expect("daemon");
 
         let (tx, rx) = oneshot::channel();
         let joined = tokio::spawn(async move {
@@ -180,14 +185,19 @@ async fn an_unknown_profile_is_named_along_with_the_ones_that_exist() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_known_profile_reaches_the_not_yet_implemented_path() {
-    // Recording lands in a later PR. What matters now is that the profile was resolved
-    // first, so a typo is reported as a typo rather than being masked by this.
+async fn a_known_profile_is_accepted_immediately() {
+    // The reply must not wait for a device to open: this runs on a keypress, and the point
+    // of the daemon is that pressing a key is instant.
     let harness = Harness::start(CONFIG).await;
-    let (code, _) = harness.send_expecting_error(Command::Start {
+    match harness.send(Command::Start {
+        profile: "dictate".to_owned(),
+    }) {
+        Response::Accepted { .. } => {}
+        other => panic!("expected acceptance, got {other:?}"),
+    }
+    harness.send(Command::Stop {
         profile: "dictate".to_owned(),
     });
-    assert_eq!(code, ErrorCode::NotImplemented);
     harness.stop().await;
 }
 
@@ -309,7 +319,9 @@ async fn a_reload_picks_up_a_profile_added_while_running() {
     let dir = tempfile::tempdir().expect("temp dir");
     std::fs::write(dir.path().join("config.toml"), CONFIG).expect("write config");
     let socket = dir.path().join("vc.sock");
-    let daemon = vc_daemon::Daemon::new(dir.path(), socket.clone()).expect("daemon");
+    let daemon =
+        vc_daemon::Daemon::with_storage(dir.path(), socket.clone(), Some(dir.path().join("data")))
+            .expect("daemon");
     let (tx, rx) = oneshot::channel();
     let joined = tokio::spawn(async move {
         daemon
@@ -346,13 +358,7 @@ async fn a_reload_picks_up_a_profile_added_while_running() {
     match client.send(Command::Start {
         profile: "later".to_owned(),
     }) {
-        Err(ClientError::Refused { code, .. }) => {
-            assert_eq!(
-                code,
-                ErrorCode::NotImplemented,
-                "the new profile should resolve now"
-            );
-        }
+        Ok(Response::Accepted { .. }) => {}
         other => panic!("expected the new profile to resolve, got {other:?}"),
     }
 
@@ -367,7 +373,9 @@ async fn a_broken_config_is_refused_and_the_running_one_survives() {
     let dir = tempfile::tempdir().expect("temp dir");
     std::fs::write(dir.path().join("config.toml"), CONFIG).expect("write config");
     let socket = dir.path().join("vc.sock");
-    let daemon = vc_daemon::Daemon::new(dir.path(), socket.clone()).expect("daemon");
+    let daemon =
+        vc_daemon::Daemon::with_storage(dir.path(), socket.clone(), Some(dir.path().join("data")))
+            .expect("daemon");
     let (tx, rx) = oneshot::channel();
     let joined = tokio::spawn(async move {
         daemon
@@ -415,7 +423,9 @@ async fn a_socket_left_behind_by_a_crash_is_cleared() {
     // A plain file where the socket goes, as a crashed daemon would leave.
     std::fs::write(&socket, b"stale").expect("write stale socket");
 
-    let daemon = vc_daemon::Daemon::new(dir.path(), socket.clone()).expect("daemon");
+    let daemon =
+        vc_daemon::Daemon::with_storage(dir.path(), socket.clone(), Some(dir.path().join("data")))
+            .expect("daemon");
     let (tx, rx) = oneshot::channel();
     let joined = tokio::spawn(async move {
         daemon
@@ -439,7 +449,12 @@ async fn a_second_daemon_refuses_to_steal_a_live_socket() {
     let dir = tempfile::tempdir().expect("temp dir");
     std::fs::write(dir.path().join("config.toml"), CONFIG).expect("write config");
 
-    let intruder = vc_daemon::Daemon::new(dir.path(), harness.socket.clone()).expect("daemon");
+    let intruder = vc_daemon::Daemon::with_storage(
+        dir.path(),
+        harness.socket.clone(),
+        Some(dir.path().join("data")),
+    )
+    .expect("daemon");
     let error = intruder
         .run(std::future::pending())
         .await

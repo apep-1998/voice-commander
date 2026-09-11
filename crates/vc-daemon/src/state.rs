@@ -3,9 +3,13 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
+use std::sync::mpsc::Sender;
+
+use tokio::sync::watch;
 use vc_core::config::Config;
-use vc_core::session::SessionId;
-use vc_ipc::protocol::{ActivityState, DaemonStatus, DeviceStatus};
+use vc_ipc::protocol::DaemonStatus;
+
+use crate::engine;
 
 /// Everything mutable, behind one lock.
 ///
@@ -19,10 +23,10 @@ pub struct State {
     /// Warnings from the configuration currently in effect, kept so `status` can surface
     /// them long after the log line scrolled away.
     pub config_warnings: Vec<String>,
-    pub activity: ActivityState,
-    pub session: Option<SessionId>,
-    pub profile: Option<String>,
-    pub device: Option<DeviceStatus>,
+    /// Commands to the capture thread. It owns the microphone; nothing else touches it.
+    pub engine: Sender<engine::Command>,
+    /// The capture thread's own view of what it is doing, published as it changes.
+    pub engine_status: watch::Receiver<engine::Status>,
     pub socket: PathBuf,
     /// Where the configuration is read from, so a reload does not have to be routed back out
     /// to whoever constructed the daemon.
@@ -36,14 +40,14 @@ impl State {
         config_warnings: Vec<String>,
         socket: PathBuf,
         config_dir: PathBuf,
+        engine: Sender<engine::Command>,
+        engine_status: watch::Receiver<engine::Status>,
     ) -> Self {
         Self {
             config,
             config_warnings,
-            activity: ActivityState::Idle,
-            session: None,
-            profile: None,
-            device: None,
+            engine,
+            engine_status,
             socket,
             config_dir,
             started_at: Instant::now(),
@@ -51,14 +55,15 @@ impl State {
     }
 
     pub fn status(&self) -> DaemonStatus {
+        let engine = self.engine_status.borrow().clone();
         DaemonStatus {
             version: env!("CARGO_PKG_VERSION").to_owned(),
             protocol: vc_ipc::PROTOCOL_VERSION,
             uptime_secs: self.started_at.elapsed().as_secs(),
-            activity: self.activity,
-            session: self.session.clone(),
-            profile: self.profile.clone(),
-            device: self.device.clone(),
+            activity: engine.activity,
+            session: engine.session,
+            profile: engine.profile,
+            device: engine.device,
             // Sorted, because `status` doubles as "what can I bind?" and an arbitrary order
             // makes that list annoying to read.
             profiles: self.config.profiles.keys().cloned().collect(),
