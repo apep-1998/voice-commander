@@ -1,0 +1,20 @@
+[package]
+name = "vc-daemon"
+description = "The voice-commander daemon: owns the microphone, sessions and the pipeline"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "voice-commanderd"
+path = "src/main.rs"
+
+[dependencies]
+vc-core = { workspace = true }
+vc-ipc = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,47 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/vc-core",
+    "crates/vc-audio",
+    "crates/vc-stt",
+    "crates/vc-sinks",
+    "crates/vc-ipc",
+    "crates/vc-daemon",
+    "crates/vc-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/apep-1998/voice-commander"
+authors = ["Arsham <arshammoh1998@gmail.com>"]
+
+# Shared dependency versions. Individual crates opt in with `dep = { workspace = true }`
+# so the whole workspace stays on one version of everything.
+[workspace.dependencies]
+vc-core = { path = "crates/vc-core" }
+vc-audio = { path = "crates/vc-audio" }
+vc-stt = { path = "crates/vc-stt" }
+vc-sinks = { path = "crates/vc-sinks" }
+vc-ipc = { path = "crates/vc-ipc" }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+# The daemon holds a microphone open for hours; a panic is a silent failure the user
+# only notices when a recording goes missing. Make the panicking paths loud in review.
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+dbg_macro = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
