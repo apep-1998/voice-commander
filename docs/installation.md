@@ -20,17 +20,39 @@ On Debian or Ubuntu:
 sudo apt install cargo libasound2-dev pkg-config
 ```
 
-## Build and install
+## Install
 
 ```sh
 git clone https://github.com/apep-1998/voice-commander
 cd voice-commander
+./install.sh
+```
+
+That checks your build dependencies (and tells you the exact package command for your
+distro if any are missing), builds, installs, sets up the systemd user service, and offers
+to check your microphone. It will not overwrite a configuration you already have.
+
+```
+./install.sh --yes           accept every default, no questions
+./install.sh --prefix DIR    somewhere other than ~/.local
+./install.sh --no-service    skip systemd
+./install.sh --uninstall     remove the binaries and the service
+```
+
+`--uninstall` never touches your recordings or your configuration; it prints where they are
+so you can remove them yourself.
+
+### By hand
+
+If you would rather not run a script:
+
+```sh
 cargo build --release
 install -Dm755 target/release/voice-commander  ~/.local/bin/voice-commander
 install -Dm755 target/release/voice-commanderd ~/.local/bin/voice-commanderd
 ```
 
-Make sure `~/.local/bin` is on your `PATH`. Two binaries are installed:
+Make sure `~/.local/bin` is on your `PATH`. Either way, two binaries are installed:
 
 - **`voice-commanderd`** — the daemon. It holds the microphone, the pre-roll buffer and all
   session state. It runs all the time.
@@ -89,12 +111,20 @@ voice-commander config show          # the fully resolved configuration, default
 
 ### As a systemd user service (recommended)
 
+`./install.sh` does this for you. By hand:
+
 ```sh
 install -Dm644 packaging/voice-commander.service \
   ~/.config/systemd/user/voice-commander.service
 systemctl --user daemon-reload
 systemctl --user enable --now voice-commander
 ```
+
+The unit is only lightly sandboxed, on purpose. This daemon exists to run commands *you*
+wrote — a script that files a recording somewhere, a callback that appends to
+`~/notes/voice/2026-09-11.md`. Confining its filesystem access does not harden that, it
+breaks it. What it does keep costs nothing: no new privileges, no writing to system
+configuration, no touching kernel tunables.
 
 Check it:
 
