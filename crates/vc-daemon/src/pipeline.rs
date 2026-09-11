@@ -60,7 +60,7 @@ pub async fn run(mut job: Job) {
         sinks: planned.clone(),
     });
 
-    let (transcript, skip) = transcribe(&job, &emitter).await;
+    let (transcript, latency_ms, skip) = transcribe(&job, &emitter).await;
 
     // Write the transcript beside the audio, so a callback can be handed a path rather than
     // a shell-quoted blob of the user's speech.
@@ -75,7 +75,9 @@ pub async fn run(mut job: Job) {
         transcriber: job.profile.transcriber.clone().unwrap_or_default(),
         path: text_path.clone(),
         chars: transcript.text.chars().count(),
-        latency_ms: 0,
+        // The number `stats` reports, and the one that tells a user their provider is slow
+        // enough to be worth a lower timeout.
+        latency_ms,
         language: transcript.language.clone(),
         error: None,
     });
@@ -179,12 +181,12 @@ fn build_plan(job: &Job) -> Vec<Planned> {
 ///
 /// Returns the transcript and, when there is none, the reason — so a skipped callback can say
 /// *why* rather than merely being greyed out.
-async fn transcribe(job: &Job, emitter: &Emitter) -> (Option<Transcript>, Option<SkipReason>) {
+async fn transcribe(job: &Job, emitter: &Emitter) -> (Option<Transcript>, u64, Option<SkipReason>) {
     let session = &emitter.session;
     let profile = emitter.profile.as_str();
     let Some(name) = &job.profile.transcriber else {
         // Not a failure: a profile that records straight to a callback is a first-class case.
-        return (None, Some(SkipReason::NoTranscript));
+        return (None, 0, Some(SkipReason::NoTranscript));
     };
 
     let Some(transcriber) = job.transcribers.get(name) else {
@@ -196,7 +198,7 @@ async fn transcribe(job: &Job, emitter: &Emitter) -> (Option<Transcript>, Option
             error: format!("transcriber {name:?} could not be built"),
             latency_ms: 0,
         });
-        return (None, Some(SkipReason::TranscriptionFailed));
+        return (None, 0, Some(SkipReason::TranscriptionFailed));
     };
 
     emitter.send(Event::TranscribeStarted {
@@ -248,7 +250,7 @@ async fn transcribe(job: &Job, emitter: &Emitter) -> (Option<Transcript>, Option
                 .text
                 .is_empty()
                 .then_some(SkipReason::NoTranscript);
-            (Some(transcript), skip)
+            (Some(transcript), latency_ms, skip)
         }
         Err(error) => {
             warn!(session = %session, %error, latency_ms, "transcription failed");
@@ -260,7 +262,7 @@ async fn transcribe(job: &Job, emitter: &Emitter) -> (Option<Transcript>, Option
                 stage: Stage::Transcription,
                 message: error.to_string(),
             });
-            (None, Some(SkipReason::TranscriptionFailed))
+            (None, latency_ms, Some(SkipReason::TranscriptionFailed))
         }
     }
 }

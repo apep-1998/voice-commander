@@ -37,6 +37,29 @@ struct Args {
 }
 
 #[derive(Debug, Subcommand)]
+enum ConfigCommand {
+    /// Write a commented starter configuration.
+    Init {
+        /// Where to write it. Defaults to $XDG_CONFIG_HOME/voice-commander/config.toml.
+        #[arg(long, value_name = "PATH")]
+        path: Option<PathBuf>,
+        /// Overwrite an existing file.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Load the configuration and report every problem with it.
+    Check {
+        #[arg(long, value_name = "DIR")]
+        config_dir: Option<PathBuf>,
+    },
+    /// Print the fully resolved configuration, with every default filled in.
+    Show {
+        #[arg(long, value_name = "DIR")]
+        config_dir: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum Verb {
     /// Begin recording, or continue the session still in its cooldown window.
     Start {
@@ -89,6 +112,23 @@ enum Verb {
         #[arg(long, value_name = "DIR")]
         config_dir: Option<PathBuf>,
     },
+    /// Summarise your recordings, and say what the configuration should be.
+    ///
+    /// Reads the `session.json` files directly, so it works with the daemon stopped.
+    Stats {
+        /// Only sessions from the last N days.
+        #[arg(long, value_name = "DAYS")]
+        days: Option<u32>,
+        /// Print the raw numbers as JSON.
+        #[arg(long)]
+        json: bool,
+        /// Where recordings live. Defaults to $XDG_DATA_HOME/voice-commander.
+        #[arg(long, value_name = "DIR")]
+        data_dir: Option<PathBuf>,
+    },
+    /// Configuration management.
+    #[command(subcommand)]
+    Config(ConfigCommand),
     /// Check whether the daemon is up.
     Ping,
     /// Ask the daemon to exit.
@@ -121,6 +161,17 @@ fn run(args: Args) -> Result<(), ClientError> {
     if let Verb::Events { follow, events } = args.command {
         return stream_events(&socket, follow, events);
     }
+    if let Verb::Stats {
+        days,
+        json,
+        data_dir,
+    } = args.command
+    {
+        return stats(days, json, data_dir);
+    }
+    if let Verb::Config(command) = args.command {
+        return config(command);
+    }
     if let Verb::MicTest {
         seconds,
         device,
@@ -141,7 +192,9 @@ fn run(args: Args) -> Result<(), ClientError> {
         Verb::Reload => Cmd::Reload,
         Verb::Ping => Cmd::Ping,
         Verb::Shutdown => Cmd::Shutdown,
-        Verb::Events { .. } | Verb::MicTest { .. } => unreachable!("handled above"),
+        Verb::Events { .. } | Verb::MicTest { .. } | Verb::Stats { .. } | Verb::Config(_) => {
+            unreachable!("handled above")
+        }
     };
     let response = Client::connect(&socket, TIMEOUT)?.send(command)?;
     report(&response, want_json);
@@ -216,6 +269,198 @@ fn print_status(status: &vc_ipc::DaemonStatus, want_json: bool) {
             "  config:    {} warning(s) — run `voice-commander reload` to see them",
             status.config_warnings
         );
+    }
+}
+
+/// Summarise the recordings on disk.
+///
+/// Reads `session.json` files directly rather than asking the daemon, so it works with the
+/// daemon stopped — and so it can be pointed at an archive copied from another machine.
+fn stats(days: Option<u32>, json: bool, data_dir: Option<PathBuf>) -> Result<(), ClientError> {
+    let root = data_dir.unwrap_or_else(vc_core::paths::data_dir);
+    let cutoff =
+        days.map(|days| time::OffsetDateTime::now_utc() - time::Duration::days(i64::from(days)));
+
+    let mut sessions = Vec::new();
+    let mut unreadable = 0usize;
+    collect_sessions(&root.join("recordings"), &mut sessions, &mut unreadable, 0);
+    if let Some(cutoff) = cutoff {
+        sessions.retain(|session: &vc_core::SessionRecord| session.started_at >= cutoff);
+    }
+
+    if sessions.is_empty() {
+        println!("no recordings found under {}", root.display());
+        if unreadable > 0 {
+            println!("({unreadable} file(s) could not be read)");
+        }
+        return Ok(());
+    }
+
+    let summary = vc_core::stats::Summary::from_sessions(&sessions);
+
+    if json {
+        println!("{summary:#?}");
+        return Ok(());
+    }
+
+    println!("{} recordings", summary.sessions);
+    println!(
+        "  total audio:   {:.1} minutes",
+        summary.total_audio_ms as f64 / 60_000.0
+    );
+    println!(
+        "  typical length: {:.1}s (longest {:.1}s)",
+        summary.median_duration_ms as f64 / 1000.0,
+        summary.longest_ms as f64 / 1000.0
+    );
+    println!(
+        "  continued:     {} ({}%)",
+        summary.continued,
+        summary.continued * 100 / summary.sessions.max(1)
+    );
+    if let Some(p90) = summary.resume_delay_p90() {
+        println!("     you press again within {p90}ms, 90% of the time");
+    }
+    if let Some(p90) = summary.pre_roll_speech_p90() {
+        println!(
+            "  speech caught before the keypress: up to {p90}ms (window is {}ms)",
+            summary.configured_pre_roll_ms.unwrap_or(0)
+        );
+    }
+    if summary.watchdog_stops > 0 {
+        println!("  cut off by the watchdog: {}", summary.watchdog_stops);
+    }
+    if summary.transcribed + summary.transcription_failures > 0 {
+        println!(
+            "  transcribed:   {} ({} failed, typically {}ms)",
+            summary.transcribed, summary.transcription_failures, summary.median_transcription_ms
+        );
+    }
+    if summary.sink_runs > 0 {
+        println!(
+            "  callbacks:     {} run, {} failed",
+            summary.sink_runs, summary.sink_failures
+        );
+    }
+    if unreadable > 0 {
+        println!("  ({unreadable} session file(s) could not be read)");
+    }
+
+    let advice = summary.advice();
+    if advice.is_empty() {
+        println!("\nnothing to suggest — either it is well tuned, or there is not enough data yet");
+    } else {
+        println!("\nsuggestions:");
+        for entry in advice {
+            println!("  {}: {}", entry.setting, entry.message);
+        }
+    }
+    Ok(())
+}
+
+/// Find every `session.json` under `dir`.
+fn collect_sessions(
+    dir: &std::path::Path,
+    out: &mut Vec<vc_core::SessionRecord>,
+    unreadable: &mut usize,
+    depth: usize,
+) {
+    if depth > 5 {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_sessions(&path, out, unreadable, depth + 1);
+        } else if path.file_name().is_some_and(|name| name == "session.json") {
+            // A single unreadable file — written by an older version, or truncated by a
+            // crash — must not stop the rest being summarised.
+            match std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|text| serde_json::from_str(&text).ok())
+            {
+                Some(record) => out.push(record),
+                None => *unreadable += 1,
+            }
+        }
+    }
+}
+
+/// Configuration subcommands.
+fn config(command: ConfigCommand) -> Result<(), ClientError> {
+    match command {
+        ConfigCommand::Init { path, force } => {
+            let path = path.unwrap_or_else(|| vc_core::paths::config_dir().join("config.toml"));
+            if path.exists() && !force {
+                eprintln!(
+                    "{} already exists; pass --force to overwrite it",
+                    path.display()
+                );
+                std::process::exit(1);
+            }
+            if let Some(parent) = path.parent() {
+                if let Err(error) = std::fs::create_dir_all(parent) {
+                    eprintln!("creating {}: {error}", parent.display());
+                    std::process::exit(1);
+                }
+            }
+            if let Err(error) = std::fs::write(&path, vc_core::config::EXAMPLE_CONFIG) {
+                eprintln!("writing {}: {error}", path.display());
+                std::process::exit(1);
+            }
+            println!("wrote {}", path.display());
+            println!("everything in it is optional — delete what you do not want to change");
+            println!("then check it with `voice-commander config check`");
+            Ok(())
+        }
+        ConfigCommand::Check { config_dir } => {
+            let dir = config_dir.unwrap_or_else(vc_core::paths::config_dir);
+            match vc_core::Config::load_from_dir(&dir) {
+                Ok(loaded) => {
+                    println!("{}: ok", dir.display());
+                    println!(
+                        "  profiles: {}",
+                        loaded
+                            .config
+                            .profiles
+                            .keys()
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                    for warning in &loaded.warnings {
+                        println!("  warning: {warning}");
+                    }
+                    if loaded.warnings.is_empty() {
+                        println!("  no warnings");
+                    }
+                    Ok(())
+                }
+                Err(error) => {
+                    eprintln!("{error}");
+                    std::process::exit(6);
+                }
+            }
+        }
+        ConfigCommand::Show { config_dir } => {
+            let dir = config_dir.unwrap_or_else(vc_core::paths::config_dir);
+            match vc_core::Config::load_from_dir(&dir) {
+                Ok(loaded) => {
+                    match toml::to_string_pretty(&loaded.config) {
+                        Ok(text) => println!("{text}"),
+                        Err(error) => eprintln!("could not render the configuration: {error}"),
+                    }
+                    Ok(())
+                }
+                Err(error) => {
+                    eprintln!("{error}");
+                    std::process::exit(6);
+                }
+            }
+        }
     }
 }
 

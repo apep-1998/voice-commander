@@ -178,6 +178,9 @@ impl Engine {
         if let Err(error) = self.storage.prepare() {
             error!(%error, "cannot prepare the recordings directory");
         }
+        // Once at startup, then after each session. Not on a timer: the only thing that
+        // grows this directory is recording into it.
+        self.sweep();
 
         loop {
             match commands.recv_timeout(TICK) {
@@ -595,6 +598,16 @@ impl Engine {
         });
 
         self.maybe_close_after_recording(&profile);
+        self.sweep();
+    }
+
+    /// Apply the retention limits, if there are any.
+    fn sweep(&self) {
+        crate::retention::sweep(
+            self.storage.root(),
+            &self.config.storage,
+            std::time::SystemTime::now(),
+        );
     }
 
     /// Send a finished session to the pipeline.

@@ -425,7 +425,7 @@ working nine-line shell indicator is at the bottom of that file.
 | `command` transcriber | ✅ |
 | `openai` and `http` transcribers | ✅ |
 | Callbacks — all six kinds, with fan-out, retries and skip reasons | ✅ |
-| `stats`, retention, `config init` | planned |
+| `stats`, retention, `config init`, packaging | ✅ |
 | Graphical indicator | deliberately deferred — build one on the event stream |
 
 Configuring something not yet implemented is reported by name at startup rather than silently

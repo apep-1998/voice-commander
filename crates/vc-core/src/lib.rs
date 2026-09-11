@@ -9,6 +9,7 @@ pub mod config;
 pub mod event;
 pub mod paths;
 pub mod session;
+pub mod stats;
 pub mod tokens;
 
 pub use config::{Config, ConfigError, Loaded};
