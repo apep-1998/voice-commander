@@ -6,9 +6,13 @@
 //! `vc-stt` and `vc-sinks` can implement them without depending on each other.
 
 pub mod config;
+pub mod event;
 pub mod paths;
+pub mod session;
 
 pub use config::{Config, ConfigError, Loaded};
+pub use event::{Envelope, Event};
+pub use session::{SessionId, SessionRecord};
 
 /// Wire-format version stamped on every emitted event.
 ///
