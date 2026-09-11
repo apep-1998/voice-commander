@@ -110,7 +110,7 @@ Early, and usable for recording today.
 | WAV + `session.json` output with full timings and levels | ✅ |
 | `mic-test`, `status`, `events --follow`, `reload` | ✅ |
 | `command` transcriber — whisper.cpp, faster-whisper, any script | ✅ |
-| `openai` and `http` transcribers | in progress |
+| `openai` and `http` transcribers | ✅ |
 | Callbacks — `command`, `http`, `clipboard`, `type`, `notify`, `file` | in progress |
 | `stats`, retention, packaging | planned |
 

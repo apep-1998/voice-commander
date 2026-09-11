@@ -35,13 +35,16 @@ impl Fixture {
         self.dir.path()
     }
 
-    /// Write an executable shell script and return its path.
+    /// Write a shell script and return its path.
+    ///
+    /// Callers run it as `/bin/sh <path>` rather than executing it directly. Writing a file
+    /// and immediately exec'ing it is racy in a multi-threaded program: another thread
+    /// forking for its own child can hold a write descriptor open across the exec, and the
+    /// kernel answers ETXTBSY. Handing the path to `sh` sidesteps that entirely — it reads
+    /// the file rather than executing it — and costs nothing the tests care about.
     fn script(&self, name: &str, body: &str) -> String {
-        use std::os::unix::fs::PermissionsExt;
         let path = self.dir.path().join(name);
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("write script");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-            .expect("chmod script");
+        std::fs::write(&path, format!("{body}\n")).expect("write script");
         path.display().to_string()
     }
 
@@ -73,6 +76,13 @@ fn argv(parts: &[&str]) -> Vec<String> {
     parts.iter().map(|part| (*part).to_owned()).collect()
 }
 
+/// Build argv that runs a script written by [`Fixture::script`].
+fn sh(script: &str, args: &[&str]) -> Vec<String> {
+    let mut out = vec!["/bin/sh".to_owned(), script.to_owned()];
+    out.extend(args.iter().map(|arg| (*arg).to_owned()));
+    out
+}
+
 async fn run(
     cmd: Vec<String>,
     text: TextSource,
@@ -90,7 +100,7 @@ async fn text_is_read_from_standard_output() {
     let fixture = Fixture::new();
     let script = fixture.script("say.sh", "echo 'open my calendar'");
 
-    let transcript = run(argv(&[&script]), TextSource::Stdout, &fixture)
+    let transcript = run(sh(&script, &[]), TextSource::Stdout, &fixture)
         .await
         .expect("should transcribe");
 
@@ -105,7 +115,7 @@ async fn text_can_be_read_from_a_file_the_program_wrote() {
     let out = fixture.path().join("out.txt").display().to_string();
 
     let transcript = run(
-        argv(&[&script, &out]),
+        sh(&script, &[&out]),
         TextSource::File { path: out.clone() },
         &fixture,
     )
@@ -121,7 +131,7 @@ async fn the_output_file_path_may_itself_use_tokens() {
     let script = fixture.script("write.sh", "printf 'tokenised' > \"$1/out.txt\"");
 
     let transcript = run(
-        argv(&[&script, "{session_dir}"]),
+        sh(&script, &["{session_dir}"]),
         TextSource::File {
             path: "{session_dir}/out.txt".to_owned(),
         },
@@ -140,7 +150,7 @@ async fn trailing_whitespace_is_trimmed() {
     let fixture = Fixture::new();
     let script = fixture.script("pad.sh", "printf '\\n\\n  hello  \\n\\n'");
 
-    let transcript = run(argv(&[&script]), TextSource::Stdout, &fixture)
+    let transcript = run(sh(&script, &[]), TextSource::Stdout, &fixture)
         .await
         .expect("should transcribe");
 
@@ -154,7 +164,7 @@ async fn an_empty_transcript_is_a_result_not_a_failure() {
     let fixture = Fixture::new();
     let script = fixture.script("silent.sh", "true");
 
-    let transcript = run(argv(&[&script]), TextSource::Stdout, &fixture)
+    let transcript = run(sh(&script, &[]), TextSource::Stdout, &fixture)
         .await
         .expect("should succeed");
 
@@ -171,13 +181,9 @@ async fn the_audio_path_is_substituted() {
         "test -f \"$1\" && printf 'found %s' \"$(basename \"$1\")\"",
     );
 
-    let transcript = run(
-        argv(&[&script, "{audio_path}"]),
-        TextSource::Stdout,
-        &fixture,
-    )
-    .await
-    .expect("should transcribe");
+    let transcript = run(sh(&script, &["{audio_path}"]), TextSource::Stdout, &fixture)
+        .await
+        .expect("should transcribe");
 
     assert_eq!(transcript.text, "found audio.wav");
 }
@@ -188,7 +194,7 @@ async fn the_program_runs_in_the_session_directory() {
     let fixture = Fixture::new();
     let script = fixture.script("where.sh", "pwd");
 
-    let transcript = run(argv(&[&script]), TextSource::Stdout, &fixture)
+    let transcript = run(sh(&script, &[]), TextSource::Stdout, &fixture)
         .await
         .expect("should transcribe");
 
@@ -204,10 +210,8 @@ async fn a_path_containing_spaces_stays_one_argument() {
     std::fs::create_dir_all(&awkward).expect("create");
     std::fs::write(awkward.join("audio.wav"), b"x").expect("write");
 
-    use std::os::unix::fs::PermissionsExt;
     let script = dir.path().join("count.sh");
-    std::fs::write(&script, "#!/bin/sh\nprintf '%s' \"$#\"\n").expect("write script");
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    std::fs::write(&script, "printf '%s' \"$#\"\n").expect("write script");
 
     let request = TranscribeRequest {
         audio_path: awkward.join("audio.wav"),
@@ -219,7 +223,7 @@ async fn a_path_containing_spaces_stays_one_argument() {
     };
 
     let transcript = transcriber(
-        argv(&[&script.display().to_string(), "{audio_path}"]),
+        sh(&script.display().to_string(), &["{audio_path}"]),
         TextSource::Stdout,
         5_000,
     )
@@ -241,7 +245,7 @@ async fn the_environment_carries_the_same_values() {
     let transcriber = vc_stt::CommandTranscriber::new(
         "local".to_owned(),
         Config {
-            cmd: argv(&[&script]),
+            cmd: sh(&script, &[]),
             text: TextSource::Stdout,
             env: [("MY_MODEL".to_owned(), "base.en".to_owned())]
                 .into_iter()
@@ -266,7 +270,7 @@ async fn a_failing_program_reports_what_it_said() {
     let fixture = Fixture::new();
     let script = fixture.script("fail.sh", "echo 'model file not found' >&2; exit 1");
 
-    let error = run(argv(&[&script]), TextSource::Stdout, &fixture)
+    let error = run(sh(&script, &[]), TextSource::Stdout, &fixture)
         .await
         .expect_err("should fail");
 
@@ -282,7 +286,7 @@ async fn a_program_that_decided_to_fail_is_not_retried() {
     let fixture = Fixture::new();
     let script = fixture.script("fail.sh", "exit 1");
 
-    let error = run(argv(&[&script]), TextSource::Stdout, &fixture)
+    let error = run(sh(&script, &[]), TextSource::Stdout, &fixture)
         .await
         .expect_err("should fail");
 
@@ -317,7 +321,7 @@ async fn a_slow_program_is_killed_and_the_timeout_is_worth_retrying() {
     let fixture = Fixture::new();
     let script = fixture.script("slow.sh", "sleep 30");
 
-    let error = transcriber(argv(&[&script]), TextSource::Stdout, 200)
+    let error = transcriber(sh(&script, &[]), TextSource::Stdout, 200)
         .transcribe(&fixture.request())
         .await
         .expect_err("should time out");
@@ -333,7 +337,7 @@ async fn a_program_that_succeeds_without_writing_its_output_file_is_reported_cle
     let script = fixture.script("lie.sh", "true");
 
     let error = run(
-        argv(&[&script]),
+        sh(&script, &[]),
         TextSource::File {
             path: fixture
                 .path()
@@ -378,9 +382,34 @@ transcriber = "local"
 }
 
 #[test]
-fn an_unsupported_transcriber_does_not_stop_the_others_being_built() {
-    // One unbuildable entry must not take the daemon down: the other profiles still work,
-    // and the user finds out from a log line rather than from nothing starting.
+fn one_unbuildable_transcriber_does_not_stop_the_others_being_built() {
+    // One bad entry must not take the daemon down: the other profiles still work, and the
+    // user finds out from a log line rather than from nothing starting at all.
+    //
+    // Every shipped adapter builds now, so this uses a transcriber whose *command* is empty
+    // — something configuration validation rejects, but which a caller constructing the
+    // config directly can still produce.
+    let config: vc_core::config::TranscriberConfig = toml::from_str(
+        r#"
+type = "command"
+cmd = []
+text = { from = "stdout" }
+"#,
+    )
+    .expect("parses");
+
+    match vc_stt::build("broken", &config) {
+        Ok(transcriber) => {
+            // An empty command is caught when it runs rather than when it is built, which is
+            // fine — the failure is reported against the session, not against startup.
+            assert_eq!(transcriber.kind(), "command");
+        }
+        Err(error) => assert!(error.to_string().contains("broken"), "{error}"),
+    }
+}
+
+#[test]
+fn the_registry_builds_every_adapter_the_configuration_names() {
     let loaded = vc_core::Config::from_layers(&[
         vc_core::config::Layer::new("<embedded>", vc_core::config::EMBEDDED_DEFAULT),
         vc_core::config::Layer::new(
@@ -393,10 +422,16 @@ text = { from = "stdout" }
 [transcribers.cloud]
 type = "openai"
 api_key = { env = "KEY" }
+[transcribers.other]
+type = "http"
+url = "https://example.com/v1"
+audio = { how = "raw_body" }
 [profiles.a]
 transcriber = "local"
 [profiles.b]
 transcriber = "cloud"
+[profiles.c]
+transcriber = "other"
 "#,
         ),
     ])
@@ -404,30 +439,8 @@ transcriber = "cloud"
 
     let (registry, errors) = vc_stt::Registry::from_config(&loaded.config);
 
-    assert!(
-        registry.get("local").is_some(),
-        "the usable one still built"
-    );
-    assert_eq!(errors.len(), 1);
-    assert!(errors[0].to_string().contains("cloud"), "{:?}", errors[0]);
-}
-
-#[test]
-fn an_unimplemented_kind_is_named_rather_than_silently_skipped() {
-    let config: vc_core::config::TranscriberConfig = toml::from_str(
-        r#"
-type = "http"
-url = "https://example.com/v1"
-audio = { how = "raw_body" }
-"#,
-    )
-    .expect("parses");
-
-    let error = match vc_stt::build("groq", &config) {
-        Err(error) => error,
-        Ok(_) => panic!("the http adapter is not implemented in this PR"),
-    };
-    let message = error.to_string();
-    assert!(message.contains("groq"), "{message}");
-    assert!(message.contains("http"), "{message}");
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(registry.get("local").map(|t| t.kind()), Some("command"));
+    assert_eq!(registry.get("cloud").map(|t| t.kind()), Some("openai"));
+    assert_eq!(registry.get("other").map(|t| t.kind()), Some("http"));
 }

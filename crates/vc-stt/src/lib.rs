@@ -8,6 +8,8 @@
 //! config-described one are indistinguishable to the pipeline.
 
 pub mod command;
+pub mod http;
+pub mod openai;
 pub mod registry;
 
 use std::path::PathBuf;
@@ -15,6 +17,8 @@ use std::path::PathBuf;
 use vc_core::session::SessionId;
 
 pub use command::CommandTranscriber;
+pub use http::HttpTranscriber;
+pub use openai::OpenAiTranscriber;
 pub use registry::{build, BuildError, Registry};
 
 /// What a transcriber is asked to do.

@@ -173,6 +173,46 @@ impl Tokens {
     }
 }
 
+/// Expand `${VAR}` references from the process environment.
+///
+/// Used for header values, where the point is that a secret lives in the environment rather
+/// than in the configuration file. Expansion happens when the request is built, not when the
+/// config is loaded, so rotating a key does not mean reloading the daemon.
+///
+/// A variable that is not set expands to nothing, and its name is returned so the caller can
+/// say which one — sending `Bearer ${GROQ_API_KEY}` verbatim to a provider produces a 401
+/// that tells the user nothing about what actually went wrong.
+pub fn expand_env(template: &str) -> (String, Vec<String>) {
+    let mut out = String::with_capacity(template.len());
+    let mut missing = Vec::new();
+    let mut rest = template;
+
+    while let Some(open) = rest.find("${") {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 2..];
+        match after.find('}') {
+            Some(close) => {
+                let name = &after[..close];
+                match std::env::var(name) {
+                    Ok(value) => out.push_str(&value),
+                    Err(_) => {
+                        if !missing.iter().any(|m| m == name) {
+                            missing.push(name.to_owned());
+                        }
+                    }
+                }
+                rest = &after[close + 1..];
+            }
+            None => {
+                out.push_str("${");
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    (out, missing)
+}
+
 /// Read a `{token}` at the start of `text`, returning its name and how much it spans.
 ///
 /// A token name is lowercase letters, digits and underscores — which is what every real
@@ -363,6 +403,40 @@ mod tests {
         let args = tokens.expand_args(&["cp".to_owned(), "{audio_path}".to_owned()]);
         assert_eq!(args[1], "/home/u/my recordings/audio.wav");
         assert_eq!(args.len(), 2);
+    }
+
+    #[test]
+    fn environment_references_are_expanded() {
+        std::env::set_var("VC_TEST_KEY", "sk-secret");
+        let (value, missing) = expand_env("Bearer ${VC_TEST_KEY}");
+        assert_eq!(value, "Bearer sk-secret");
+        assert!(missing.is_empty());
+    }
+
+    #[test]
+    fn an_unset_variable_is_named_rather_than_sent_verbatim() {
+        // Sending `Bearer ${GROQ_API_KEY}` to a provider produces a 401 that tells the user
+        // nothing about what actually went wrong.
+        std::env::remove_var("VC_TEST_ABSENT");
+        let (value, missing) = expand_env("Bearer ${VC_TEST_ABSENT}");
+        assert_eq!(value, "Bearer ");
+        assert_eq!(missing, vec!["VC_TEST_ABSENT".to_owned()]);
+    }
+
+    #[test]
+    fn a_lone_dollar_brace_is_left_as_text() {
+        let (value, missing) = expand_env("costs ${100");
+        assert_eq!(value, "costs ${100");
+        assert!(missing.is_empty());
+    }
+
+    #[test]
+    fn token_braces_and_environment_braces_do_not_collide() {
+        // `{text}` and `${VAR}` are different mechanisms with different lifetimes, and a
+        // header value may contain both.
+        std::env::set_var("VC_TEST_HOST", "example.com");
+        let (value, _) = expand_env("https://${VC_TEST_HOST}/{session_id}");
+        assert_eq!(value, "https://example.com/{session_id}");
     }
 
     #[test]
