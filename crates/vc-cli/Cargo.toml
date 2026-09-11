@@ -1,0 +1,22 @@
+[package]
+name = "vc-cli"
+description = "The voice-commander client: a thin, fast CLI that talks to the daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "voice-commander"
+path = "src/main.rs"
+
+# NOTE: this crate is invoked directly by a keybind, so its startup time is user-visible.
+# Keep it free of async runtimes and HTTP stacks — a blocking UnixStream is all it needs.
+[dependencies]
+vc-core = { workspace = true }
+vc-ipc = { workspace = true }
+
+[lints]
+workspace = true

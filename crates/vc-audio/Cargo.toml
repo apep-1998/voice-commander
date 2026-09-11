@@ -1,0 +1,14 @@
+[package]
+name = "vc-audio"
+description = "Audio capture, ring buffering, pre-roll and level metering for voice-commander"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true
