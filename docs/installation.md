@@ -69,18 +69,20 @@ device name).
 ## Create a configuration
 
 ```sh
-mkdir -p ~/.config/voice-commander
 voice-commander config init          # writes a commented starter file
+voice-commander config check         # validate it
 ```
 
 Everything works with no configuration at all — the built-in defaults record and archive.
 See [configuration.md](configuration.md) for the full reference and
 [recipes.md](recipes.md) for setups you can copy.
 
-Validate any edit before relying on it:
+Validate any edit before relying on it — it reports every problem in one pass, with the exact
+key path:
 
 ```sh
 voice-commander config check
+voice-commander config show          # the fully resolved configuration, defaults filled in
 ```
 
 ## Run the daemon
@@ -202,3 +204,4 @@ rm -rf ~/.local/share/voice-commander # your recordings
 | Two presses became two recordings | You were outside `cooldown_ms`. Raise it |
 | `no profile named …` | The error lists the profiles that do exist. Check `voice-commander status` |
 | Nothing in the journal | `VOICE_COMMANDER_LOG=debug voice-commanderd` |
+| Not sure what to tune | `voice-commander stats` — it reads your own recordings and says |

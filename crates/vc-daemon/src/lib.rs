@@ -12,6 +12,7 @@ pub mod listener;
 pub mod pipeline;
 pub mod presenters;
 pub mod recorder;
+pub mod retention;
 pub mod state;
 pub mod storage;
 

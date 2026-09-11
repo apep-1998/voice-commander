@@ -97,12 +97,15 @@ voice-commander cancel                 # discard whatever is in flight
 voice-commander status                 # what the daemon is doing
 voice-commander events --follow        # the event stream, as newline-delimited JSON
 voice-commander mic-test               # record briefly and report what arrived
+voice-commander stats                  # summarise your recordings and suggest settings
+voice-commander config init            # write a commented starter configuration
+voice-commander config check           # validate, reporting every problem at once
 voice-commander reload                 # re-read the configuration
 ```
 
 ## Status
 
-Early, and usable for recording today.
+Feature-complete against the design, and in use.
 
 | | |
 |---|---|
@@ -112,7 +115,7 @@ Early, and usable for recording today.
 | `command` transcriber — whisper.cpp, faster-whisper, any script | ✅ |
 | `openai` and `http` transcribers | ✅ |
 | Callbacks — all six kinds, with fan-out, retries and skip reasons | ✅ |
-| `stats`, retention, packaging | planned |
+| `stats`, retention, `config init`, packaging | ✅ |
 
 Deliberately deferred: the graphical overlay, a native PipeWire backend, and in-process
 Whisper. The event stream is a documented, versioned contract precisely so an indicator can be
