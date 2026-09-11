@@ -1,0 +1,195 @@
+# ~/.config/voice-commander/config.toml
+#
+# Written by `voice-commander config init`. Everything here is optional: this file is merged
+# on top of the built-in defaults, so delete anything you do not want to change.
+#
+# Check your edits with `voice-commander config check`, which resolves the whole thing and
+# tells you about unknown keys, dangling references and settings that contradict each other.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Defaults every profile inherits. Any profile can override any of these.
+# ─────────────────────────────────────────────────────────────────────────────
+
+[defaults.capture]
+# preroll   — hold the device open and keep a rolling window of recent audio, so the
+#             recording includes the moment *before* you pressed the key. No clipped first
+#             syllables. Costs an open microphone and a little memory.
+# warm      — hold the device open, but no lookback.
+# on_demand — open the device on keypress, close it on release. Lowest idle power, but you
+#             lose roughly the first 100-200ms of what you say.
+mode = "preroll"
+
+# How much audio from before the keypress to keep. Raise it if you habitually start talking
+# before you finish pressing; `voice-commander stats` will tell you whether you do.
+pre_roll_ms = 500
+
+# Close the device after this many idle seconds and reopen it on demand. This is the battery
+# knob: it keeps the latency benefit while you are using the tool, without holding the
+# microphone open all night. 0 never closes it.
+idle_release_secs = 300
+
+# "default" follows the system default input. Otherwise, any substring of a device name.
+device = "default"
+
+[defaults.session]
+# Releasing the key does not finalise the recording — it starts this window. Press again
+# inside it and you continue the same recording, which is what you want when you release the
+# key and immediately remember one more thing.
+cooldown_ms = 1500
+
+# The watchdog. A release keybind can be missed — let go of the modifier before the key and
+# the compositor never fires it — and without this the daemon would record indefinitely.
+max_recording_secs = 120
+max_total_secs = 300
+
+[defaults.continuation]
+# keep    — the gap audio is already captured, so the take stays continuous (preroll/warm only)
+# drop    — splice the segments together and discard the gap
+# silence — splice with inserted silence, which helps some models separate the utterances
+gap = "keep"
+silence_ms = 300
+max_segments = 5
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Speech-to-text. Optional — a profile may have none.
+# ─────────────────────────────────────────────────────────────────────────────
+
+[transcribers.openai]
+type = "openai"
+model = "gpt-4o-transcribe"
+# The key is never stored here. Point at an environment variable, or a command that prints it.
+api_key = { env = "OPENAI_API_KEY" }
+# api_key = { command = ["pass", "show", "openai/api-key"] }
+language = "en"
+
+# The `http` adapter is the generic one: it is how you add a provider that nobody has written
+# an integration for. Describe the request and where the text is in the response.
+[transcribers.groq]
+type = "http"
+url = "https://api.groq.com/openai/v1/audio/transcriptions"
+method = "POST"
+headers = { Authorization = "Bearer ${GROQ_API_KEY}" }
+audio = { how = "multipart", field = "file" }
+form = { model = "whisper-large-v3-turbo", response_format = "json" }
+response = { format = "json", text_pointer = "/text" }
+timeout_ms = 30000
+retry = { attempts = 2, backoff_ms = 500 }
+
+# Deepgram wants the raw bytes as the body and buries the transcript deeper in the response.
+# Same adapter, different description.
+[transcribers.deepgram]
+type = "http"
+url = "https://api.deepgram.com/v1/listen"
+headers = { Authorization = "Token ${DEEPGRAM_API_KEY}", "Content-Type" = "audio/wav" }
+audio = { how = "raw_body" }
+query = { model = "nova-2", smart_format = "true" }
+response = { format = "json", text_pointer = "/results/channels/0/alternatives/0/transcript" }
+
+# Anything with a command line works, which covers every local model. No network involved.
+[transcribers.local]
+type = "command"
+cmd = ["whisper-cli", "-m", "/opt/whisper/ggml-base.en.bin", "-f", "{audio_path}", "-nt"]
+text = { from = "stdout" }
+timeout_ms = 120000
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Callbacks. A profile fans out to as many as you like.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# The general case: run a program. It receives the substituted arguments below, the same
+# values as VC_* environment variables, and the full session metadata as JSON on stdin.
+#
+# Available tokens: {audio_path} {text_path} {text} {session_id} {session_dir} {profile}
+#                   {duration_ms} {started_at} {date} {language}
+[sinks.agent]
+type = "command"
+cmd = ["~/.local/bin/voice-agent.sh", "{text_path}", "{audio_path}"]
+timeout_ms = 60000
+on_error = "ignore"
+
+[sinks.archive]
+type = "command"
+# This one is useful with no transcript at all, so it opts out of needing text.
+requires_text = false
+cmd = ["~/.local/bin/archive-recording.sh", "{audio_path}"]
+
+[sinks.webhook]
+type = "http"
+url = "https://example.com/hooks/voice"
+headers = { Authorization = "Bearer ${WEBHOOK_TOKEN}" }
+body = { kind = "session_json" }
+retry = { attempts = 3, backoff_ms = 1000 }
+
+[sinks.clipboard]
+type = "clipboard"
+
+# Types the transcript into whatever window has focus — this is the dictation setup.
+[sinks.type_it]
+type = "type"
+tool = "auto"
+
+[sinks.journal]
+type = "file"
+path = "~/notes/voice/{date}.md"
+template = "- {started_at} {text}\n"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Feedback. No graphical indicator ships yet; what ships is the event stream one would be
+# built on. Watch it with `voice-commander events --follow`.
+# ─────────────────────────────────────────────────────────────────────────────
+
+[feedback]
+enabled = true
+listening = true
+processing = true
+processing_linger_ms = 1500
+level_interval_ms = 50
+presenters = ["socket"]
+
+[presenters.socket]
+type = "socket"
+
+# Drive your own indicator — a waybar module, a script, anything. Each event arrives as one
+# line of JSON on stdin.
+# [presenters.bar]
+# type = "command"
+# cmd = ["~/.local/bin/voice-indicator.sh"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Profiles. Each one is what a keybind selects.
+#
+#   bind  = SUPER, code:27, exec, voice-commander start --profile dictate
+#   bindr = SUPER, code:27, exec, voice-commander stop  --profile dictate
+#   bind  = SUPER, Escape,  exec, voice-commander cancel
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Fast and local: transcribe on this machine, type the result into the focused window.
+[profiles.dictate]
+transcriber = "local"
+sinks = ["type_it"]
+capture = { pre_roll_ms = 300 }
+
+# Accurate and remote: cloud transcription, fanned out to three callbacks at once.
+[profiles.agent]
+transcriber = "openai"
+sinks = ["agent", "archive", "clipboard"]
+sink_mode = "parallel"
+session = { cooldown_ms = 3000 }
+
+# No transcription at all — just hand the audio file to a script.
+[profiles.memo]
+transcriber = false
+sinks = ["archive"]
+
+# Swapping provider is a one-line change, because the profile only names one.
+[profiles.notes]
+transcriber = "groq"
+sinks = ["journal", "webhook"]
+
+# A toggle rather than push-to-talk: one keybind starts, the same keybind stops. Long limits,
+# because this one is for recording a whole meeting rather than a sentence.
+[profiles.meeting]
+trigger = "toggle"
+transcriber = "deepgram"
+sinks = ["archive", "webhook"]
+session = { max_recording_secs = 1800, max_total_secs = 3600 }
