@@ -287,7 +287,7 @@ sinks = ["good", "bad"]
     )
     .await;
 
-    let finished: Vec<u32> = events
+    let mut finished: Vec<u32> = events
         .iter()
         .filter_map(|event| match &event.event {
             vc_core::Event::SinkFinished { id, .. } => Some(*id),
@@ -295,6 +295,11 @@ sinks = ["good", "bad"]
         })
         .collect();
 
+    // Sorted before comparing: in parallel mode these fire as each callback resolves, which
+    // is deliberately non-deterministic. The property is that every planned row resolves
+    // exactly once, not that they finish in the order they were listed — the *records* are
+    // sorted so an indicator's rows stay put, but the events are not.
+    finished.sort_unstable();
     assert_eq!(finished, vec![0, 1], "every planned row must resolve once");
 }
 
