@@ -33,6 +33,7 @@ thiserror = "2.0.20"
 directories = "6.0.0"
 tempfile = "3.27.0"
 rtrb = "0.3.2"
+cpal = "0.16.0"
 rubato = "0.16.2"
 anyhow = "1.0.100"
 clap = { version = "4.5.51", features = ["derive"] }

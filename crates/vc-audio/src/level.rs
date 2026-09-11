@@ -94,6 +94,25 @@ impl LevelMeter {
     }
 }
 
+/// The warning a whole recording warrants, judged from its totals.
+///
+/// Deliberately not "the worst thing any single block did". Every recording contains quiet
+/// blocks — the pauses between words are quiet by definition — so taking the worst block
+/// would label almost everything as too quiet. A summary judges the recording; the per-block
+/// [`LevelMeter::warning`] drives the live indicator, where a transient warning is both
+/// appropriate and transient.
+pub fn summary_warning(summary: &LevelSummary, levels: &LevelsConfig) -> Option<InputWarningKind> {
+    if summary.clipped_samples > 0 {
+        Some(InputWarningKind::Clipping)
+    } else if summary.peak_dbfs < levels.silence_dbfs {
+        Some(InputWarningKind::Silence)
+    } else if summary.mean_rms_dbfs < levels.too_quiet_dbfs {
+        Some(InputWarningKind::TooQuiet)
+    } else {
+        None
+    }
+}
+
 /// Running totals across a whole session, for `session.json`.
 #[derive(Debug, Clone)]
 pub struct LevelTotals {
@@ -308,6 +327,52 @@ mod tests {
         assert_eq!(summary.speech_ms, 0);
         assert_eq!(summary.peak_dbfs, SILENCE_FLOOR_DBFS);
         assert!(summary.mean_rms_dbfs.is_finite());
+    }
+
+    #[test]
+    fn a_recording_is_judged_on_its_totals_not_its_quietest_moment() {
+        // Every recording has quiet blocks — the pauses between words. Judging on the worst
+        // block would label almost every recording "too quiet", which is what a real
+        // three-second microphone check did before this existed.
+        let summary = LevelSummary {
+            peak_dbfs: -11.8,
+            mean_rms_dbfs: -32.1,
+            speech_ms: 2_800,
+            silence_ms: 200,
+            clipped_samples: 0,
+        };
+        assert_eq!(summary_warning(&summary, &levels()), None);
+    }
+
+    #[test]
+    fn a_genuinely_quiet_recording_is_still_reported() {
+        let summary = LevelSummary {
+            peak_dbfs: -38.0,
+            mean_rms_dbfs: -52.0,
+            speech_ms: 0,
+            silence_ms: 3_000,
+            clipped_samples: 0,
+        };
+        assert_eq!(
+            summary_warning(&summary, &levels()),
+            Some(InputWarningKind::TooQuiet)
+        );
+    }
+
+    #[test]
+    fn a_recording_that_never_rose_above_the_floor_is_silence_not_quietness() {
+        // These call for different actions: "unmute it" rather than "move closer".
+        let summary = LevelSummary {
+            peak_dbfs: -100.0,
+            mean_rms_dbfs: -100.0,
+            speech_ms: 0,
+            silence_ms: 3_000,
+            clipped_samples: 0,
+        };
+        assert_eq!(
+            summary_warning(&summary, &levels()),
+            Some(InputWarningKind::Silence)
+        );
     }
 
     #[test]
