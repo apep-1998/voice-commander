@@ -12,6 +12,7 @@ authors.workspace = true
 vc-core = { workspace = true }
 tokio = { workspace = true, features = ["process", "io-util"] }
 thiserror = { workspace = true }
+async-trait = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

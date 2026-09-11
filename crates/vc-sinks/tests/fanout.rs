@@ -537,17 +537,22 @@ sinks = ["agent"]
 }
 
 #[test]
-fn an_unimplemented_sink_is_named_rather_than_silently_skipped() {
-    let config: vc_core::config::SinkConfig =
-        toml::from_str("type = \"clipboard\"").expect("parses");
-
-    match vc_sinks::build("clip", &config) {
-        Err(error) => {
-            let message = error.to_string();
-            assert!(message.contains("clip"), "{message}");
-            assert!(message.contains("clipboard"), "{message}");
-        }
-        Ok(_) => panic!("the clipboard sink is not implemented in this PR"),
+fn every_sink_kind_the_configuration_allows_can_be_built() {
+    // Configuring a kind that cannot be built would produce a callback that silently never
+    // fires, so the schema and the registry have to agree.
+    for kind in [
+        "type = \"command\"\ncmd = [\"true\"]",
+        "type = \"http\"\nurl = \"https://example.com/hook\"",
+        "type = \"clipboard\"",
+        "type = \"type\"",
+        "type = \"notify\"",
+        "type = \"file\"\npath = \"/tmp/x.md\"",
+    ] {
+        let config: vc_core::config::SinkConfig = toml::from_str(kind).expect("parses");
+        assert!(
+            vc_sinks::build("s", &config).is_ok(),
+            "this kind did not build: {kind}"
+        );
     }
 }
 

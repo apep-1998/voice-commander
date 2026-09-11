@@ -10,7 +10,10 @@
 
 pub mod command;
 pub mod fanout;
+pub mod file;
+pub mod http;
 pub mod registry;
+pub mod tools;
 
 use std::path::PathBuf;
 
@@ -19,7 +22,10 @@ use vc_core::tokens::Tokens;
 
 pub use command::CommandSink;
 pub use fanout::{run, tally, Planned, Progress};
+pub use file::FileSink;
+pub use http::HttpSink;
 pub use registry::{build, BuildError, Registry};
+pub use tools::{Clipboard, Notifier, Typist};
 
 /// Everything a callback is given.
 #[derive(Debug, Clone)]

@@ -98,6 +98,7 @@ pub fn spawn(
     storage: Storage,
     events: broadcast::Sender<String>,
     runtime: tokio::runtime::Handle,
+    in_flight: crate::inflight::InFlight,
 ) -> anyhow::Result<(
     Sender<Command>,
     watch::Receiver<Status>,
@@ -123,6 +124,7 @@ pub fn spawn(
                 transcribers,
                 sinks,
                 runtime,
+                in_flight,
                 config,
                 storage,
                 events,
@@ -153,6 +155,8 @@ struct Engine {
     sinks: vc_sinks::Registry,
     /// Where pipeline tasks are spawned. The capture thread is not itself async.
     runtime: tokio::runtime::Handle,
+    /// Pipelines still running, so shutdown can wait for them.
+    in_flight: crate::inflight::InFlight,
     storage: Storage,
     events: broadcast::Sender<String>,
     status: watch::Sender<Status>,
@@ -608,7 +612,13 @@ impl Engine {
             sinks: self.sinks.clone(),
             events: self.events.clone(),
         };
-        self.runtime.spawn(crate::pipeline::run(job));
+        // Registered before the task is spawned, so a shutdown arriving in between still
+        // sees this pipeline as outstanding.
+        let guard = self.in_flight.enter();
+        self.runtime.spawn(async move {
+            crate::pipeline::run(job).await;
+            drop(guard);
+        });
     }
 
     fn finish_on_shutdown(&mut self) {

@@ -111,8 +111,7 @@ Early, and usable for recording today.
 | `mic-test`, `status`, `events --follow`, `reload` | ✅ |
 | `command` transcriber — whisper.cpp, faster-whisper, any script | ✅ |
 | `openai` and `http` transcribers | ✅ |
-| Callbacks — `command`, and the full fan-out with retries and skip reasons | ✅ |
-| Callbacks — `http`, `clipboard`, `type`, `notify`, `file` | in progress |
+| Callbacks — all six kinds, with fan-out, retries and skip reasons | ✅ |
 | `stats`, retention, packaging | planned |
 
 Deliberately deferred: the graphical overlay, a native PipeWire backend, and in-process
