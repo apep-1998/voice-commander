@@ -1,0 +1,5 @@
+# Tests are allowed to panic: a failed `expect` in a test *is* the failure report, and
+# rewriting every assertion into error propagation would obscure what is being tested.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true

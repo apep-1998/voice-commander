@@ -27,6 +27,11 @@ vc-stt = { path = "crates/vc-stt" }
 vc-sinks = { path = "crates/vc-sinks" }
 vc-ipc = { path = "crates/vc-ipc" }
 
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "1.1.6"
+thiserror = "2.0.20"
+directories = "6.0.0"
+
 [workspace.lints.rust]
 unsafe_code = "deny"
 missing_debug_implementations = "warn"
