@@ -15,10 +15,13 @@ async-trait = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true, features = ["fs"] }
+reqwest = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
 toml = { workspace = true }
+wiremock = { workspace = true }
 
 [lints]
 workspace = true

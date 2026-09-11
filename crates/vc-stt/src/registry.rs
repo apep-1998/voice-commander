@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use vc_core::config::{Config, TranscriberConfig, TranscriberKind};
 
-use crate::{CommandTranscriber, Transcriber};
+use crate::{CommandTranscriber, HttpTranscriber, OpenAiTranscriber, Transcriber};
 
 /// Why a transcriber could not be built.
 ///
@@ -27,17 +27,16 @@ pub fn build(name: &str, config: &TranscriberConfig) -> Result<Arc<dyn Transcrib
             command.clone(),
             config.timeout_ms,
         ))),
-        // The HTTP adapters arrive in the next PR. Naming them explicitly means a user who
-        // configures one now is told so, rather than finding the profile silently producing
-        // no transcript.
-        TranscriberKind::Openai(_) => Err(BuildError::Unsupported {
-            name: name.to_owned(),
-            kind: "openai",
-        }),
-        TranscriberKind::Http(_) => Err(BuildError::Unsupported {
-            name: name.to_owned(),
-            kind: "http",
-        }),
+        TranscriberKind::Openai(openai) => Ok(Arc::new(OpenAiTranscriber::new(
+            name.to_owned(),
+            openai.clone(),
+            config.timeout_ms,
+        ))),
+        TranscriberKind::Http(http) => Ok(Arc::new(HttpTranscriber::new(
+            name.to_owned(),
+            http.clone(),
+            config.timeout_ms,
+        ))),
     }
 }
 

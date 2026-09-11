@@ -423,7 +423,7 @@ working nine-line shell indicator is at the bottom of that file.
 | WAV and `session.json` output | ✅ |
 | `mic-test`, `status`, `events --follow`, `reload` | ✅ |
 | `command` transcriber | ✅ |
-| `openai` and `http` transcribers | in progress |
+| `openai` and `http` transcribers | ✅ |
 | Callbacks (`command`, `http`, `clipboard`, `type`, `notify`, `file`) | in progress |
 | `stats`, retention, `config init` | planned |
 | Graphical indicator | deliberately deferred — build one on the event stream |
