@@ -44,6 +44,13 @@ pub struct CommandSpec {
     /// Written to the child's standard input, which is then closed.
     pub stdin: Option<String>,
     pub timeout: Duration,
+    /// This program forks a background process that outlives it.
+    ///
+    /// `wl-copy` does exactly this: it daemonizes to keep owning the selection until
+    /// something replaces it. The forked child inherits the output pipes, so waiting for
+    /// them to close waits forever even though the program itself exited immediately.
+    /// Setting this waits for the exit status alone, at the cost of not capturing output.
+    pub detaches: bool,
 }
 
 impl CommandSpec {
@@ -54,6 +61,7 @@ impl CommandSpec {
             cwd: None,
             stdin: None,
             timeout: Duration::from_secs(60),
+            detaches: false,
         }
     }
 
@@ -74,6 +82,12 @@ impl CommandSpec {
 
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
+        self
+    }
+
+    /// Mark this program as one that forks a background process. See [`CommandSpec::detaches`].
+    pub fn detaching(mut self) -> Self {
+        self.detaches = true;
         self
     }
 
@@ -138,8 +152,16 @@ pub async fn run(spec: &CommandSpec) -> Result<CommandOutput, ExecError> {
         } else {
             Stdio::null()
         })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stdout(if spec.detaches {
+            Stdio::null()
+        } else {
+            Stdio::piped()
+        })
+        .stderr(if spec.detaches {
+            Stdio::null()
+        } else {
+            Stdio::piped()
+        })
         // Without this, a child that outlives us keeps running after the daemon exits.
         .kill_on_drop(true);
 
@@ -170,11 +192,28 @@ pub async fn run(spec: &CommandSpec) -> Result<CommandOutput, ExecError> {
         }
     }
 
-    match tokio::time::timeout(spec.timeout, child.wait_with_output()).await {
-        Ok(Ok(output)) => Ok(CommandOutput {
-            status: output.status.code(),
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    // For a program that forks, wait only for the program itself to exit. Waiting for its
+    // output pipes to close would wait for the background child, which is the whole point of
+    // it having forked.
+    let finished = async {
+        if spec.detaches {
+            child
+                .wait()
+                .await
+                .map(|status| (status, Vec::new(), Vec::new()))
+        } else {
+            child
+                .wait_with_output()
+                .await
+                .map(|output| (output.status, output.stdout, output.stderr))
+        }
+    };
+
+    match tokio::time::timeout(spec.timeout, finished).await {
+        Ok(Ok((status, stdout, stderr))) => Ok(CommandOutput {
+            status: status.code(),
+            stdout: String::from_utf8_lossy(&stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&stderr).into_owned(),
             timed_out: false,
             elapsed: started.elapsed(),
         }),
@@ -325,6 +364,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_program_that_forks_does_not_hang_the_caller() {
+        // `wl-copy` daemonizes to keep owning the selection. The forked child inherits the
+        // output pipes, so waiting for EOF waits forever even though the program exited at
+        // once — which is exactly how the clipboard callback hung in a real run.
+        let started = Instant::now();
+        let output = run(&spec(&[
+            "/bin/sh",
+            "-c",
+            // Exit immediately, leaving a child holding stdout open.
+            "sleep 30 & exit 0",
+        ])
+        .detaching()
+        .with_timeout(Duration::from_secs(5)))
+        .await
+        .expect("runs");
+
+        assert!(output.succeeded(), "{output:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "waited {:?} for a program that had already exited",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
     async fn the_environment_reaches_the_child() {
         let mut env = BTreeMap::new();
         env.insert("VC_TEXT".to_owned(), "open my calendar".to_owned());
@@ -384,5 +448,85 @@ mod tests {
         assert_eq!(expand_tilde("/opt/a~b"), "/opt/a~b");
         // `~user` needs a passwd lookup nobody has asked for.
         assert_eq!(expand_tilde("~root/x"), "~root/x");
+    }
+}
+
+/// How a command gets run.
+///
+/// The external-tool sinks — clipboard, keystroke injection, notifications — are little more
+/// than an argv and an exit code. Putting that behind a trait means their tests can assert
+/// on the exact command line without `wl-copy`, `wtype` or `notify-send` being installed,
+/// which is the difference between testing them and not.
+#[async_trait::async_trait]
+pub trait Runner: Send + Sync + std::fmt::Debug {
+    async fn run(&self, spec: &CommandSpec) -> Result<CommandOutput, ExecError>;
+
+    /// Whether a program is on `PATH`. Used to choose between interchangeable tools.
+    fn has(&self, program: &str) -> bool {
+        which(program)
+    }
+}
+
+/// Runs commands for real.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RealRunner;
+
+#[async_trait::async_trait]
+impl Runner for RealRunner {
+    async fn run(&self, spec: &CommandSpec) -> Result<CommandOutput, ExecError> {
+        run(spec).await
+    }
+}
+
+/// Whether `program` exists and is executable on `PATH`.
+///
+/// A small `which`, because the alternative is finding out by spawning it and reading
+/// `ENOENT` back — which works, but makes "pick whichever of these two is installed"
+/// awkward and slow.
+pub fn which(program: &str) -> bool {
+    if program.contains('/') {
+        return is_executable(std::path::Path::new(program));
+    }
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| is_executable(&dir.join(program)))
+}
+
+fn is_executable(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod runner_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn the_real_runner_runs_things() {
+        let output = RealRunner
+            .run(&CommandSpec::new(vec![
+                "/bin/echo".to_owned(),
+                "hi".to_owned(),
+            ]))
+            .await
+            .expect("runs");
+        assert_eq!(output.stdout.trim(), "hi");
+    }
+
+    #[test]
+    fn which_finds_programs_on_the_path_and_not_otherwise() {
+        assert!(which("sh"), "sh should be on PATH");
+        assert!(!which("definitely-not-a-real-program-xyz"));
+    }
+
+    #[test]
+    fn which_accepts_an_absolute_path() {
+        assert!(which("/bin/sh"));
+        assert!(!which("/bin/definitely-not-real"));
+        // A directory is not a program.
+        assert!(!which("/tmp"));
     }
 }

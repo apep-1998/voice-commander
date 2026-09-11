@@ -9,6 +9,22 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+vc-core = { workspace = true }
+vc-exec = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true, features = ["fs"] }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+toml = { workspace = true }
+time = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+wiremock = { workspace = true }
 
 [lints]
 workspace = true

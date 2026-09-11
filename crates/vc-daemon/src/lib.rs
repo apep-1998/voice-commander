@@ -6,7 +6,9 @@
 //! the accept loop.
 
 pub mod engine;
+pub mod inflight;
 pub mod listener;
+pub mod pipeline;
 pub mod recorder;
 pub mod state;
 pub mod storage;
@@ -26,6 +28,12 @@ use listener::Directive;
 use state::State;
 use storage::Storage;
 
+/// How long to let running pipelines finish when shutting down.
+///
+/// Long enough for a transcription and a webhook to complete, short enough that a user who
+/// asked the daemon to stop is not left waiting on someone else's slow server.
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(20);
+
 /// How many events a subscriber may fall behind before it starts losing them.
 ///
 /// Levels arrive twenty times a second, so this is several seconds of slack — enough for a
@@ -41,6 +49,8 @@ pub struct Daemon {
     /// Joined on shutdown so the capture thread gets to finish writing whatever it was
     /// recording, rather than having the process exit out from under it.
     capture: Option<std::thread::JoinHandle<()>>,
+    /// Pipelines still running. Waited on for the same reason.
+    in_flight: inflight::InFlight,
 }
 
 impl std::fmt::Debug for Daemon {
@@ -76,8 +86,18 @@ impl Daemon {
         let root = data_dir
             .or_else(|| loaded.config.storage.dir.clone())
             .unwrap_or_else(vc_core::paths::data_dir);
-        let (engine_tx, engine_status, capture) =
-            engine::spawn(loaded.config.clone(), Storage::new(root), events.clone())?;
+        // The capture thread needs a handle to spawn pipeline tasks onto, and `Daemon::new`
+        // is always called from inside the runtime.
+        let runtime = tokio::runtime::Handle::try_current()
+            .context("the daemon must be constructed inside a tokio runtime")?;
+        let in_flight = inflight::InFlight::new();
+        let (engine_tx, engine_status, capture) = engine::spawn(
+            loaded.config.clone(),
+            Storage::new(root),
+            events.clone(),
+            runtime,
+            in_flight.clone(),
+        )?;
 
         Ok(Self {
             state: Arc::new(Mutex::new(State::new(
@@ -91,6 +111,7 @@ impl Daemon {
             events,
             socket,
             capture: Some(capture),
+            in_flight,
         })
     }
 
@@ -138,6 +159,11 @@ impl Daemon {
         if let Some(capture) = self.capture.take() {
             let _ = tokio::task::spawn_blocking(move || capture.join()).await;
         }
+
+        // Then let the pipelines finish. The capture thread hands its last session off on
+        // the way out, so this has to come second — and without it, a transcript and a set
+        // of callback results that already completed would never reach session.json.
+        self.in_flight.drain(SHUTDOWN_GRACE).await;
 
         listener::cleanup(&self.socket);
         result
