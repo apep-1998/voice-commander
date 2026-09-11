@@ -4,8 +4,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use vc_core::config::{Config, SinkConfig, SinkKind};
+use vc_exec::{RealRunner, Runner};
 
-use crate::{CommandSink, Sink};
+use crate::{Clipboard, CommandSink, FileSink, HttpSink, Notifier, Sink, Typist};
 
 #[derive(Debug, thiserror::Error)]
 pub enum BuildError {
@@ -17,21 +18,54 @@ pub enum BuildError {
 
 /// Build one callback from its configuration.
 pub fn build(name: &str, config: &SinkConfig) -> Result<Arc<dyn Sink>, BuildError> {
+    build_with(name, config, Arc::new(RealRunner))
+}
+
+/// As [`build`], but with the external tools driven by `runner`.
+///
+/// The seam exists so the clipboard, typing and notification sinks can be tested against
+/// their exact command lines without `wl-copy`, `wtype` or `notify-send` being installed.
+pub fn build_with(
+    name: &str,
+    config: &SinkConfig,
+    runner: Arc<dyn Runner>,
+) -> Result<Arc<dyn Sink>, BuildError> {
     let requires_text = config.needs_text();
-    match &config.kind {
-        SinkKind::Command(command) => Ok(Arc::new(CommandSink::new(
+    let timeout = config.timeout_ms;
+
+    Ok(match &config.kind {
+        SinkKind::Command(command) => Arc::new(CommandSink::new(
             name.to_owned(),
             command.clone(),
             requires_text,
-            config.timeout_ms,
-        ))),
-        // Naming the unimplemented kinds means a user who configures one is told at startup,
-        // rather than finding a callback that silently never fires.
-        other => Err(BuildError::Unsupported {
-            name: name.to_owned(),
-            kind: other.type_name(),
-        }),
-    }
+            timeout,
+        )),
+        SinkKind::Http(http) => Arc::new(HttpSink::new(
+            name.to_owned(),
+            http.clone(),
+            requires_text,
+            timeout,
+        )),
+        SinkKind::Clipboard(clipboard) => Arc::new(Clipboard::new(
+            name.to_owned(),
+            clipboard.clone(),
+            timeout,
+            runner,
+        )),
+        SinkKind::Type(typing) => Arc::new(Typist::new(
+            name.to_owned(),
+            typing.clone(),
+            timeout,
+            runner,
+        )),
+        SinkKind::Notify(notify) => Arc::new(Notifier::new(
+            name.to_owned(),
+            notify.clone(),
+            timeout,
+            runner,
+        )),
+        SinkKind::File(file) => Arc::new(FileSink::new(name.to_owned(), file.clone())),
+    })
 }
 
 /// Every callback the configuration defines, by name.

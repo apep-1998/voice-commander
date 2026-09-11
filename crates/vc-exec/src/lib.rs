@@ -11,5 +11,5 @@
 pub mod command;
 pub mod retry;
 
-pub use command::{run, CommandOutput, CommandSpec, ExecError};
+pub use command::{run, which, CommandOutput, CommandSpec, ExecError, RealRunner, Runner};
 pub use retry::{retry, RetryOutcome};
