@@ -1,0 +1,8 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# Local scratch / recordings produced while testing
+/scratch
+/recordings
+*.wav.tmp
