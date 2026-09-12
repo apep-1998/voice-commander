@@ -36,8 +36,15 @@ to check your microphone. It will not overwrite a configuration you already have
 ./install.sh --yes           accept every default, no questions
 ./install.sh --prefix DIR    somewhere other than ~/.local
 ./install.sh --no-service    skip systemd
+./install.sh --no-path       do not touch your shell profile
 ./install.sh --uninstall     remove the binaries and the service
 ```
+
+If the install directory is not on your `PATH` it offers to add it to your shell profile —
+`.zshrc`, `.bashrc`, `config.fish` or `.profile`, whichever your shell reads. It recognises a
+line you already wrote in any of the usual spellings (`$HOME/...`, `${HOME}/...`, `~/...` or
+the full path) so it never adds a second one, and what it does add is marked so `--uninstall`
+can remove exactly that and nothing else.
 
 `--uninstall` never touches your recordings or your configuration; it prints where they are
 so you can remove them yourself.
@@ -52,7 +59,13 @@ install -Dm755 target/release/voice-commander  ~/.local/bin/voice-commander
 install -Dm755 target/release/voice-commanderd ~/.local/bin/voice-commanderd
 ```
 
-Make sure `~/.local/bin` is on your `PATH`. Either way, two binaries are installed:
+If you install by hand, make sure `~/.local/bin` is on your `PATH`:
+
+```sh
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc   # or ~/.bashrc
+```
+
+Either way, two binaries are installed:
 
 - **`voice-commanderd`** — the daemon. It holds the microphone, the pre-roll buffer and all
   session state. It runs all the time.

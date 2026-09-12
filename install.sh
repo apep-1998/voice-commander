@@ -40,10 +40,14 @@ UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/voice-commander"
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/voice-commander"
 
+readonly PATH_MARKER_BEGIN="# >>> voice-commander >>>"
+readonly PATH_MARKER_END="# <<< voice-commander <<<"
+
 ASSUME_YES=0
 DO_SERVICE=1
 DO_CONFIG=1
 DO_MICTEST=1
+DO_PATH=1
 UNINSTALL=0
 
 # ── output ───────────────────────────────────────────────────────────────────
@@ -86,6 +90,7 @@ ${BOLD}Options${RESET}
   --no-service     do not install or enable the systemd user service
   --no-config      do not write a starter configuration
   --no-mic-test    do not check the microphone afterwards
+  --no-path        do not offer to put the install directory on your PATH
   --uninstall      remove the binaries and the service
   --help, -h       this
 
@@ -107,6 +112,7 @@ while [ $# -gt 0 ]; do
         --no-service)  DO_SERVICE=0; shift ;;
         --no-config)   DO_CONFIG=0; shift ;;
         --no-mic-test) DO_MICTEST=0; shift ;;
+        --no-path)     DO_PATH=0; shift ;;
         --uninstall)   UNINSTALL=1; shift ;;
         -h|--help)     usage; exit 0 ;;
         *)             die "unknown option: $1 (try --help)" ;;
@@ -114,6 +120,150 @@ while [ $# -gt 0 ]; do
 done
 
 readonly BIN_DIR="${PREFIX}/bin"
+
+# ── PATH ─────────────────────────────────────────────────────────────────────
+
+# The file this user's shell reads on startup, and how it spells a PATH addition.
+#
+# Set by `shell_profile` into PROFILE_FILE and PROFILE_LINE, because returning two values
+# from a shell function is otherwise more trouble than it is worth.
+PROFILE_FILE=""
+PROFILE_LINE=""
+
+shell_profile() {
+    local shell_name
+    shell_name="$(basename -- "${SHELL:-}" 2>/dev/null || true)"
+    # $SHELL is not always set — cron, some desktop launchers — so fall back to the account.
+    if [ -z "$shell_name" ] && command -v getent >/dev/null 2>&1; then
+        shell_name="$(basename -- "$(getent passwd "$(id -un)" | cut -d: -f7)")"
+    fi
+
+    case "$shell_name" in
+        zsh)
+            PROFILE_FILE="${ZDOTDIR:-$HOME}/.zshrc"
+            PROFILE_LINE="export PATH=\"${BIN_DIR}:\$PATH\""
+            ;;
+        bash)
+            # .bashrc on Linux: that is what an interactive shell reads, and it is where
+            # people already keep their PATH additions.
+            if [ -f "${HOME}/.bashrc" ]; then
+                PROFILE_FILE="${HOME}/.bashrc"
+            else
+                PROFILE_FILE="${HOME}/.bash_profile"
+            fi
+            PROFILE_LINE="export PATH=\"${BIN_DIR}:\$PATH\""
+            ;;
+        fish)
+            PROFILE_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish"
+            # fish has its own idempotent helper, so this is safe to run more than once.
+            PROFILE_LINE="fish_add_path ${BIN_DIR}"
+            ;;
+        *)
+            PROFILE_FILE="${HOME}/.profile"
+            PROFILE_LINE="export PATH=\"${BIN_DIR}:\$PATH\""
+            ;;
+    esac
+}
+
+# Whether the profile already mentions this directory.
+#
+# Matches the directory rather than a particular line, so a line the user wrote themselves is
+# recognised and not duplicated — and it has to match the *spellings people actually use*.
+# `export PATH="$HOME/.local/bin:$PATH"` never contains the expanded path, so checking only
+# for that would add a second line to a profile that was already correct.
+profile_mentions_bin_dir() {
+    [ -f "$PROFILE_FILE" ] || return 1
+
+    local candidate
+    for candidate in $(bin_dir_spellings); do
+        grep -qF -- "$candidate" "$PROFILE_FILE" 2>/dev/null && return 0
+    done
+    return 1
+}
+
+# The ways this directory might be written in a shell profile.
+bin_dir_spellings() {
+    printf '%s\n' "$BIN_DIR"
+    case "$BIN_DIR" in
+        "$HOME"/*)
+            local relative="${BIN_DIR#"$HOME"/}"
+            printf '%s\n' "\$HOME/${relative}"
+            printf '%s\n' "\${HOME}/${relative}"
+            printf '%s\n' "~/${relative}"
+            ;;
+    esac
+}
+
+ensure_on_path() {
+    case ":${PATH}:" in
+        *":${BIN_DIR}:"*)
+            ok "${BIN_DIR} is on your PATH"
+            return 0
+            ;;
+    esac
+
+    shell_profile
+
+    if profile_mentions_bin_dir; then
+        # Already written, just not in *this* shell — the usual case when the profile was
+        # edited a moment ago, or by an earlier run of this script.
+        ok "${PROFILE_FILE} already puts ${BIN_DIR} on your PATH"
+        info "open a new terminal, or run: ${BOLD}exec \$SHELL${RESET}"
+        return 0
+    fi
+
+    warn "${BIN_DIR} is not on your PATH, so the command will not be found"
+
+    if [ "$DO_PATH" = 0 ]; then
+        info "add this to ${PROFILE_FILE} yourself:"
+        printf '      %s%s%s\n' "$BOLD" "$PROFILE_LINE" "$RESET"
+        return 0
+    fi
+
+    if ! confirm "Add it to ${PROFILE_FILE/#$HOME/\~}?"; then
+        info "not added. To do it later:"
+        printf '      %secho %s >> %s%s\n' "$BOLD" "'$PROFILE_LINE'" "$PROFILE_FILE" "$RESET"
+        return 0
+    fi
+
+    mkdir -p -- "$(dirname -- "$PROFILE_FILE")"
+    # Marked so --uninstall can find exactly what was added and nothing else.
+    {
+        printf '\n%s\n' "$PATH_MARKER_BEGIN"
+        printf '%s\n' "$PROFILE_LINE"
+        printf '%s\n' "$PATH_MARKER_END"
+    } >> "$PROFILE_FILE"
+
+    ok "added to ${PROFILE_FILE}"
+    info "it applies to new shells — for this one, run: ${BOLD}exec \$SHELL${RESET}"
+}
+
+# Removes only the block this script wrote, matched by its markers. A user's own PATH line
+# is never touched.
+remove_path_entry() {
+    shell_profile
+    [ -f "$PROFILE_FILE" ] || return 0
+    grep -qF -- "$PATH_MARKER_BEGIN" "$PROFILE_FILE" 2>/dev/null || return 0
+
+    local temp
+    temp="$(mktemp)" || return 0
+    awk -v begin="$PATH_MARKER_BEGIN" -v end="$PATH_MARKER_END" '
+        $0 == begin { skipping = 1; next }
+        $0 == end   { skipping = 0; next }
+        !skipping   { print }
+    ' "$PROFILE_FILE" > "$temp"
+
+    # Only replace the file if the result still parses as something sane — a truncated
+    # shell profile is a genuinely bad thing to leave behind.
+    if [ -s "$temp" ]; then
+        cat "$temp" > "$PROFILE_FILE"
+        rm -f "$temp"
+        ok "removed the PATH entry from ${PROFILE_FILE}"
+    else
+        rm -f "$temp"
+        warn "left ${PROFILE_FILE} alone — removing the entry would have emptied it"
+    fi
+}
 
 # ── uninstall ────────────────────────────────────────────────────────────────
 
@@ -135,6 +285,8 @@ if [ "$UNINSTALL" = 1 ]; then
             ok "removed ${BIN_DIR}/${binary}"
         fi
     done
+
+    remove_path_entry
 
     # Deliberately kept. Removing someone's recordings or their configuration because they
     # uninstalled a binary would be a nasty surprise; the paths are printed instead.
@@ -219,14 +371,7 @@ for binary in voice-commander voice-commanderd; do
     ok "${BIN_DIR}/${binary}"
 done
 
-case ":${PATH}:" in
-    *":${BIN_DIR}:"*) ok "${BIN_DIR} is on your PATH" ;;
-    *)
-        warn "${BIN_DIR} is not on your PATH"
-        info "add this to your shell profile:"
-        printf '      %sexport PATH="%s:$PATH"%s\n' "$BOLD" "$BIN_DIR" "$RESET"
-        ;;
-esac
+ensure_on_path
 
 # ── configuration ────────────────────────────────────────────────────────────
 
