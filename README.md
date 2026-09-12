@@ -53,20 +53,14 @@ Existing dictation tools hardcode one provider and one action. This one doesn't.
 
 ```sh
 git clone https://github.com/apep-1998/voice-commander && cd voice-commander
-cargo build --release
-install -Dm755 target/release/voice-commander{,d} -t ~/.local/bin/
-
-voice-commander mic-test              # check audio actually arrives — do this first
+./install.sh
 ```
 
-Run the daemon:
+That checks your dependencies, builds, installs to `~/.local/bin`, sets up the systemd user
+service and offers to test your microphone. `./install.sh --help` for the options;
+`--uninstall` to remove it, which never touches your recordings.
 
-```sh
-install -Dm644 packaging/voice-commander.service ~/.config/systemd/user/
-systemctl --user enable --now voice-commander
-```
-
-Bind it, in `~/.config/hypr/hyprland.conf`:
+Then bind it, in `~/.config/hypr/hyprland.conf`:
 
 ```
 bind  = SUPER, D, exec, voice-commander start --profile dictate

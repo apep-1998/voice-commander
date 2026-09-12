@@ -9,8 +9,8 @@ PartOf=graphical-session.target
 [Service]
 Type=simple
 # systemd wants an absolute path, and %h expands to the user's home. This copy is for a
-# manual `install -Dm755 target/release/voice-commanderd ~/.local/bin/` — the PKGBUILD
-# rewrites it to /usr/bin when packaging.
+# manual install into ~/.local/bin; install.sh rewrites it for any other prefix, and the
+# PKGBUILD rewrites it to /usr/bin.
 ExecStart=%h/.local/bin/voice-commanderd
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
@@ -21,16 +21,23 @@ RestartSec=2
 StandardOutput=journal
 StandardError=journal
 
-# It records audio and runs user-defined commands, so it is not a candidate for heavy
-# sandboxing — but it has no business gaining privileges or writing outside the user's tree.
+# Deliberately lightly sandboxed.
+#
+# This daemon exists to run commands the user wrote — a script that files a recording in
+# Dropbox, a callback that appends to ~/notes/voice/2026-09-11.md, a local Whisper binary
+# reading a model from /opt. Filesystem confinement does not harden that, it breaks it:
+# ProtectHome=read-only stops the `file` callback writing a journal entry, and PrivateTmp
+# hides anything a callback leaves in /tmp from the user who went looking for it.
+#
+# What is kept is what costs nothing: it has no business gaining privileges, writing to
+# system configuration, or touching kernel tunables.
 NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=%h/.local/share/voice-commander %h/.config/voice-commander
+ProtectSystem=full
 ProtectKernelTunables=true
+ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
+RestrictRealtime=false
 
 [Install]
 WantedBy=graphical-session.target
