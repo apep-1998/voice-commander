@@ -9,6 +9,7 @@ members = [
     "crates/vc-exec",
     "crates/vc-daemon",
     "crates/vc-cli",
+    "crates/vc-overlay", "crates/vc-overlay",
 ]
 
 [workspace.package]
@@ -37,6 +38,9 @@ tempfile = "3.27.0"
 filetime = "0.2.27"
 rtrb = "0.3.2"
 cpal = "0.16.0"
+smithay-client-toolkit = "0.20.0"
+tiny-skia = "0.12.0"
+cosmic-text = "0.17.0"
 hound = "3.5.1"
 async-trait = "0.1.89"
 reqwest = { version = "0.12.24", default-features = false, features = ["rustls-tls", "multipart", "json", "stream"] }
