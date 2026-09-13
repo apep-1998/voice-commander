@@ -38,7 +38,11 @@ tempfile = "3.27.0"
 filetime = "0.2.27"
 rtrb = "0.3.2"
 cpal = "0.16.0"
-smithay-client-toolkit = "0.20.0"
+# `xkbcommon` is off: it exists to interpret keyboard input, and the overlay deliberately
+# takes none — it sets KeyboardInteractivity::None so that dictation keeps typing into
+# whatever window actually has focus. Leaving it on made libxkbcommon a build dependency of
+# the whole workspace, which CI does not have and users would have to install for nothing.
+smithay-client-toolkit = { version = "0.20.0", default-features = false, features = ["calloop"] }
 tiny-skia = "0.12.0"
 cosmic-text = "0.17.0"
 hound = "3.5.1"
