@@ -80,6 +80,7 @@ journal, and several keybinds at once.
 | **[Configuration](docs/configuration.md)** | Every setting, what it does, and why it defaults where it does |
 | **[Recipes](docs/recipes.md)** | Ten copy-paste configurations |
 | **[Events](docs/events.md)** | The stream any indicator is built on — a versioned public contract |
+| **[Overlay](docs/overlay.md)** | The on-screen indicator, and every setting for it |
 
 ## Commands
 

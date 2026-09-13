@@ -20,6 +20,7 @@ mod adapter;
 mod capture;
 mod error;
 mod merge;
+mod overlay;
 mod profile;
 mod runtime;
 mod session;
@@ -33,6 +34,9 @@ pub use adapter::{
 };
 pub use capture::{CaptureConfig, CaptureMode, DeviceSelector};
 pub use error::{ConfigError, Issue};
+pub use overlay::{
+    Hex, OverlayColours, OverlayConfig, OverlayGeometry, OverlayMotion, OverlayPosition,
+};
 pub use profile::Profile;
 pub use runtime::{
     AudioConfig, AudioFormat, CommandPresenter, DaemonConfig, FeedbackConfig, LevelsConfig,
@@ -89,6 +93,8 @@ pub struct Config {
     pub levels: LevelsConfig,
     pub storage: StorageConfig,
     pub feedback: FeedbackConfig,
+    #[serde(default)]
+    pub overlay: OverlayConfig,
     pub defaults: Defaults,
     #[serde(default)]
     pub transcribers: BTreeMap<String, TranscriberConfig>,

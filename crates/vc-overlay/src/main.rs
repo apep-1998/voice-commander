@@ -43,24 +43,28 @@ struct Args {
     #[arg(long)]
     demo: bool,
 
-    /// Where on screen to sit.
-    #[arg(long, value_enum, default_value = "bottom")]
-    position: PositionArg,
+    /// Where on screen to sit. Overrides `overlay.position`.
+    #[arg(long, value_enum)]
+    position: Option<PositionArg>,
 
     /// Distance from that screen edge, in pixels. Ignored when centred.
-    #[arg(long, default_value_t = 72)]
-    margin: i32,
+    #[arg(long)]
+    margin: Option<i32>,
 
     /// Diameter of the ring, in pixels.
-    #[arg(long, default_value_t = 240)]
-    size: u32,
+    #[arg(long)]
+    size: Option<u32>,
 
-    /// Frames per second while something is moving.
+    /// Frames per second while something is on screen.
     ///
-    /// The ring is drawn in software, so this is the main thing that decides what it costs.
-    /// 30 is smooth enough for a level meter and roughly halves the work.
-    #[arg(long, default_value_t = 60)]
-    fps: u32,
+    /// The ring is drawn in software, so this is the main thing deciding what it costs. 30
+    /// is smooth for a level meter and roughly halves the work.
+    #[arg(long)]
+    fps: Option<u32>,
+
+    /// Configuration directory. Defaults to `$XDG_CONFIG_HOME/voice-commander`.
+    #[arg(long)]
+    config_dir: Option<PathBuf>,
 
     /// Control socket. Defaults to $VOICE_COMMANDER_SOCKET, then the XDG runtime directory.
     #[arg(long)]
@@ -77,11 +81,11 @@ enum PositionArg {
     BottomLeft,
 }
 
-impl From<PositionArg> for Position {
+impl From<PositionArg> for vc_core::config::OverlayPosition {
     fn from(value: PositionArg) -> Self {
         match value {
-            PositionArg::Bottom => Self::BottomCentre,
-            PositionArg::Top => Self::TopCentre,
+            PositionArg::Bottom => Self::Bottom,
+            PositionArg::Top => Self::Top,
             // Both spellings, because half the world writes one and half the other.
             PositionArg::Center | PositionArg::Centre => Self::Centre,
             PositionArg::BottomRight => Self::BottomRight,
@@ -90,15 +94,58 @@ impl From<PositionArg> for Position {
     }
 }
 
+impl From<vc_core::config::OverlayPosition> for Position {
+    fn from(value: vc_core::config::OverlayPosition) -> Self {
+        use vc_core::config::OverlayPosition as P;
+        match value {
+            P::Bottom => Self::BottomCentre,
+            P::Top => Self::TopCentre,
+            P::Centre => Self::Centre,
+            P::BottomRight => Self::BottomRight,
+            P::BottomLeft => Self::BottomLeft,
+        }
+    }
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    let metrics = Metrics {
-        size: args.size,
-        ..Metrics::default()
+    // The configuration is the source of truth; flags override it for one run, which is what
+    // makes trying a different size or position a single command rather than an edit.
+    let dir = args.config_dir.unwrap_or_else(vc_core::paths::config_dir);
+    let mut settings = match vc_core::Config::load_from_dir(&dir) {
+        Ok(loaded) => loaded.config.overlay,
+        Err(error) => {
+            // A broken config should not stop the overlay appearing; the daemon reports it,
+            // and appearing with default styling beats not appearing at all.
+            eprintln!("using defaults: {error}");
+            vc_core::config::OverlayConfig::default()
+        }
     };
-    let overlay = Overlay::new(metrics.bars);
-    let renderer = Renderer::new(Theme::default(), metrics);
+
+    if let Some(position) = args.position {
+        settings.position = position.into();
+    }
+    if let Some(margin) = args.margin {
+        settings.margin = margin;
+    }
+    if let Some(size) = args.size {
+        settings.size = size;
+    }
+    if let Some(fps) = args.fps {
+        settings.fps = fps;
+    }
+
+    let metrics = Metrics::from_config(&settings);
+    let mut overlay = Overlay::new(metrics.bars);
+    overlay.wave_speed = settings.motion.wave_speed;
+    overlay.wave_speed_voice = settings.motion.wave_speed_voice;
+    overlay.attack = settings.motion.attack;
+    overlay.release = settings.motion.release;
+    overlay.quiet_enter = Overlay::scale_db(settings.motion.quiet_enter_dbfs);
+    overlay.quiet_leave = Overlay::scale_db(settings.motion.quiet_leave_dbfs);
+
+    let renderer = Renderer::new(Theme::from_config(&settings.colours), metrics);
 
     let feed = if args.demo {
         eprintln!("demo: playing a scripted session on a loop — Ctrl-C to stop");
@@ -113,9 +160,9 @@ fn main() -> Result<()> {
         overlay,
         renderer,
         feed,
-        args.position.into(),
-        args.margin,
-        args.fps,
+        settings.position.into(),
+        settings.margin,
+        settings.fps,
     )?;
     shell.animating = animating;
 

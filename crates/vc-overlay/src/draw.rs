@@ -12,8 +12,6 @@ use tiny_skia::{Color, FillRule, LineCap, Paint, PathBuilder, Pixmap, Rect, Stro
 use crate::state::{Overlay, Phase, RowStatus, Tone};
 use crate::theme::{Metrics, Theme};
 
-/// Width of the callback panel, when one is shown.
-pub(crate) const PANEL_WIDTH: u32 = 300;
 const PANEL_PAD: f32 = 14.0;
 const ROW_HEIGHT: f32 = 21.0;
 
@@ -60,7 +58,7 @@ impl Renderer {
         let width = if overlay.rows.is_empty() {
             self.metrics.size
         } else {
-            self.metrics.size + PANEL_WIDTH
+            self.metrics.size + self.metrics.panel_width
         };
         (width, self.metrics.size)
     }
@@ -138,7 +136,7 @@ impl Renderer {
             let rect = Rect::from_xywh(
                 left,
                 24.0,
-                PANEL_WIDTH as f32 - 4.0,
+                self.metrics.panel_width as f32 - 4.0,
                 self.metrics.size as f32 - 48.0,
             );
             if let Some(rect) = rect {
@@ -260,7 +258,9 @@ impl Renderer {
                 (cx, cy),
                 Arc {
                     r,
-                    from: from + spin * speed,
+                    // `arc_speed = 0` stops them entirely, for anyone who finds rotating
+                    // decoration distracting rather than atmospheric.
+                    from: from + spin * speed * self.metrics.arc_speed,
                     len,
                     colour: alpha(accent, a),
                     width,
@@ -293,51 +293,96 @@ impl Renderer {
 
     /// Spikes radiating from the centre, newest at the top running clockwise — so the shape
     /// is the last few seconds of the user's voice.
+    /// A travelling swell whose height is your voice.
+    ///
+    /// This replaced a ring of seventy-two spikes, one per level sample, scrolling round as
+    /// new samples arrived. That was accurate and horrible to sit under: it jittered at
+    /// twenty hertz and drew the eye constantly. What a person needs from this is one
+    /// question answered — *is my voice getting through* — and a swell answers it without
+    /// demanding attention.
+    ///
+    /// Three sine components at different wave numbers and drift rates, summed. They never
+    /// share a period, so the shape never visibly repeats, and none of them is fast.
     fn waveform(&self, pixmap: &mut Pixmap, cx: f32, cy: f32, overlay: &Overlay) {
-        // Spikes are grouped by how they will be painted — speech or room tone, and one of a
-        // few opacity steps — so seventy-two strokes become about a dozen. The fade is still
-        // a fade; it just has steps fine enough that nobody can count them.
-        const FADE_STEPS: usize = 6;
+        const POINTS: usize = 200;
+
         let accent = self.accent(overlay);
-        let bars = overlay.levels.len();
+        let phase = overlay.wave_phase;
 
-        let mut batches: Vec<(PathBuilder, bool, usize)> = (0..FADE_STEPS)
-            .flat_map(|step| {
-                [
-                    (PathBuilder::new(), true, step),
-                    (PathBuilder::new(), false, step),
-                ]
-            })
-            .collect();
+        // Always a little movement, so a silent microphone still reads as alive rather than
+        // as a frozen picture — but only a little.
+        let height = self.metrics.wave_max * (0.10 + 0.90 * overlay.swell);
 
-        for i in 0..bars {
-            let idx = (overlay.head + bars - i) % bars;
-            let v = overlay.levels[idx];
-            let a = (i as f32 / bars as f32) * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
-            let len = 2.0 + v * self.metrics.wave_max;
+        // Filled, not just outlined. An outline reads as a shape on the screen; a filled
+        // one reads as something the sound is going *into*, which is the whole question the
+        // ring exists to answer. The fill brightens with the voice, so the body of it
+        // breathes rather than sitting there.
+        let mut fill = PathBuilder::new();
+        for step in 0..=POINTS {
+            let t = step as f32 / POINTS as f32;
+            let theta = t * std::f32::consts::TAU;
+            let swell = (theta * 3.0 + phase).sin() * 0.50
+                + (theta * 5.0 - phase * 0.63).sin() * 0.30
+                + (theta * 8.0 + phase * 1.70).sin() * 0.20;
+            let r = self.metrics.wave_base + height * swell;
+            let a = theta - std::f32::consts::FRAC_PI_2;
+            let (x, y) = (cx + a.cos() * r, cy + a.sin() * r);
+            if step == 0 {
+                fill.move_to(x, y);
+            } else {
+                fill.line_to(x, y);
+            }
+        }
+        fill.close();
 
-            let age = 1.0 - i as f32 / bars as f32;
-            let step = ((age * FADE_STEPS as f32) as usize).min(FADE_STEPS - 1);
-            let loud = v > 0.12;
-            let slot = step * 2 + usize::from(!loud);
-
-            let pb = &mut batches[slot].0;
-            pb.move_to(
-                cx + a.cos() * self.metrics.wave_base,
-                cy + a.sin() * self.metrics.wave_base,
-            );
-            pb.line_to(
-                cx + a.cos() * (self.metrics.wave_base + len),
-                cy + a.sin() * (self.metrics.wave_base + len),
+        if let Some(path) = fill.finish() {
+            let mut paint = Paint::default();
+            let mut colour = accent;
+            colour.set_alpha(0.10 + 0.30 * overlay.swell);
+            paint.set_color(colour);
+            paint.anti_alias = true;
+            pixmap.fill_path(
+                &path,
+                &paint,
+                FillRule::Winding,
+                Transform::identity(),
+                None,
             );
         }
 
-        for (pb, loud, step) in batches {
-            let Some(path) = pb.finish() else { continue };
-            let mut colour = if loud { accent } else { self.theme.dim };
-            let age = (step as f32 + 0.5) / FADE_STEPS as f32;
-            colour.set_alpha(0.18 + age * 0.82);
-            self.stroke_path(pixmap, &path, colour, 2.0);
+        // Then the outlines: a faint one trailing behind, then the bright one. Cheap depth.
+        for (lag, width, alpha) in [(0.55_f32, 1.0_f32, 0.22_f32), (0.0, 2.0, 1.0)] {
+            let mut pb = PathBuilder::new();
+
+            for step in 0..=POINTS {
+                let t = step as f32 / POINTS as f32;
+                let theta = t * std::f32::consts::TAU;
+                let p = phase - lag;
+
+                let swell = (theta * 3.0 + p).sin() * 0.50
+                    + (theta * 5.0 - p * 0.63).sin() * 0.30
+                    + (theta * 8.0 + p * 1.70).sin() * 0.20;
+
+                let r = self.metrics.wave_base + height * swell;
+                let a = theta - std::f32::consts::FRAC_PI_2;
+                let (x, y) = (cx + a.cos() * r, cy + a.sin() * r);
+                if step == 0 {
+                    pb.move_to(x, y);
+                } else {
+                    pb.line_to(x, y);
+                }
+            }
+            pb.close();
+
+            if let Some(path) = pb.finish() {
+                let mut colour = if overlay.swell > 0.12 {
+                    accent
+                } else {
+                    self.theme.dim
+                };
+                colour.set_alpha(alpha);
+                self.stroke_path(pixmap, &path, colour, width);
+            }
         }
     }
 
@@ -357,7 +402,8 @@ impl Renderer {
         let mut buffer = Buffer::new(&mut self.fonts, TextMetrics::new(size, size * 1.25));
         buffer.set_size(&mut self.fonts, Some(600.0), Some(size * 2.0));
         // Whatever technical face the system has; the fallback chain handles the rest.
-        let attrs = Attrs::new().family(Family::Name("Chakra Petch"));
+        let family = self.metrics.font.clone();
+        let attrs = Attrs::new().family(Family::Name(&family));
         buffer.set_text(&mut self.fonts, value, &attrs, Shaping::Advanced, None);
         buffer.shape_until_scroll(&mut self.fonts, false);
 
@@ -497,7 +543,10 @@ impl Renderer {
 
         let mut pb = PathBuilder::new();
         pb.move_to(left + PANEL_PAD, y - 4.0);
-        pb.line_to(left + PANEL_WIDTH as f32 - PANEL_PAD - 16.0, y - 4.0);
+        pb.line_to(
+            left + self.metrics.panel_width as f32 - PANEL_PAD - 16.0,
+            y - 4.0,
+        );
         if let Some(path) = pb.finish() {
             self.stroke_path(pixmap, &path, self.theme.rule, 1.0);
         }

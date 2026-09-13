@@ -156,6 +156,23 @@ type = "socket"
 # cmd = ["~/.local/bin/voice-indicator.sh"]
 
 # ─────────────────────────────────────────────────────────────────────────────
+# The on-screen indicator. Every field is optional — set only what you want to
+# change. See docs/overlay.md for what each one does.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# [overlay]
+# position = "bottom"        # bottom | top | centre | bottom_right | bottom_left
+# size = 240
+# fps = 30                   # the main thing deciding what it costs
+
+# [overlay.motion]
+# wave_speed = 0.4           # lower is calmer
+# arc_speed = 0.0            # stop the rotating arcs entirely
+
+# [overlay.colours]
+# hud = "#58d7ff"
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Profiles. Each one is what a keybind selects.
 #
 #   bind  = SUPER, code:27, exec, voice-commander start --profile dictate

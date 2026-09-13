@@ -53,9 +53,29 @@ pub(crate) enum RowStatus {
 pub(crate) struct Overlay {
     pub phase: Phase,
     pub tone: Tone,
-    /// Newest-first ring of recent levels, 0.0 to 1.0.
+    /// Newest-first ring of recent levels, 0.0 to 1.0. Kept for anything that wants the raw
+    /// history; the ring itself is drawn from `swell`.
     pub levels: Vec<f32>,
     pub head: usize,
+    /// The level the ring actually breathes at: an envelope follower over the raw samples.
+    ///
+    /// Raw levels twenty times a second make a ring that jitters, which is a stressful thing
+    /// to have on screen while you are trying to speak. Fast attack so it responds the
+    /// moment you start, slow release so it settles like water rather than snapping back.
+    pub swell: f32,
+    /// Phase of the travelling wave, in radians. Advances with time, not with samples, so
+    /// the motion keeps its rhythm whether levels are arriving or not.
+    pub wave_phase: f32,
+    /// Radians per second the wave travels when silent, and at full voice. The speed
+    /// follows the envelope between them.
+    pub wave_speed: f32,
+    pub wave_speed_voice: f32,
+    /// How quickly the swell rises to the voice, and how slowly it subsides.
+    pub attack: f32,
+    pub release: f32,
+    /// The two thresholds the warning colour switches on, already on the 0..1 scale.
+    pub quiet_enter: f32,
+    pub quiet_leave: f32,
     pub started: Option<Instant>,
     pub cooldown_ends: Option<Instant>,
     pub cooldown_total: Duration,
@@ -78,6 +98,14 @@ impl Overlay {
             tone: Tone::Normal,
             levels: vec![0.0; bars],
             head: 0,
+            swell: 0.0,
+            wave_phase: 0.0,
+            wave_speed: 0.55,
+            wave_speed_voice: 3.4,
+            attack: Self::ATTACK,
+            release: Self::RELEASE,
+            quiet_enter: Self::QUIET_ENTER,
+            quiet_leave: Self::QUIET_LEAVE,
             started: None,
             cooldown_ends: None,
             cooldown_total: Duration::from_millis(1500),
@@ -96,11 +124,36 @@ impl Overlay {
         self.phase != Phase::Hidden
     }
 
+    /// Attack and release of the envelope follower, per frame at 60fps.
+    ///
+    /// Attack is quick enough that the ring moves as you start talking; release is slow
+    /// enough that it subsides rather than snapping shut between syllables.
+    const ATTACK: f32 = 0.28;
+    const RELEASE: f32 = 0.04;
+
+    /// Below this the input counts as too quiet; above the other, it counts as fine again.
+    ///
+    /// Two thresholds, not one. A single threshold makes the colour flip back and forth
+    /// every few frames as ordinary speech crosses it, which is the visual equivalent of a
+    /// flickering light.
+    const QUIET_ENTER: f32 = 0.22;
+    const QUIET_LEAVE: f32 = 0.34;
+
     /// Push one level measurement.
     pub(crate) fn push_level(&mut self, value: f32) {
         self.head = (self.head + 1) % self.levels.len();
         self.levels[self.head] = value.clamp(0.0, 1.0);
         self.dirty = true;
+    }
+
+    /// Move the envelope towards `target`.
+    pub(crate) fn follow(&mut self, target: f32) {
+        let rate = if target > self.swell {
+            self.attack
+        } else {
+            self.release
+        };
+        self.swell += (target.clamp(0.0, 1.0) - self.swell) * rate;
     }
 
     /// dBFS to a 0..1 bar height. -60 is the floor, -6 is full.
@@ -129,8 +182,25 @@ impl Overlay {
     pub(crate) fn tick(&mut self, now: Instant) -> bool {
         let mut changed = false;
 
-        // Once the user stops speaking the spikes are history, and leaving them frozen on
-        // screen reads as a hung meter. They fall away instead.
+        // The wave travels on the clock rather than on sample arrival, so it keeps its
+        // rhythm whether the daemon is emitting twenty levels a second or none.
+        // Speed follows the voice as well as height. Height alone says how loud you were;
+        // speed says something is happening right now, which is the feedback that actually
+        // reads at a glance.
+        let speed = self.wave_speed + (self.wave_speed_voice - self.wave_speed) * self.swell;
+        self.wave_phase = (self.wave_phase + speed * 0.016) % std::f32::consts::TAU;
+
+        // Once the user stops speaking the swell subsides rather than freezing, which would
+        // read as a hung meter.
+        if self.phase != Phase::Listening {
+            if self.swell > 0.001 {
+                self.follow(0.0);
+                changed = true;
+            } else {
+                self.swell = 0.0;
+            }
+        }
+
         if self.phase != Phase::Listening {
             let mut moved = false;
             for value in &mut self.levels {
@@ -201,16 +271,26 @@ impl Overlay {
                 clipping,
                 ..
             } => {
-                self.push_level(Self::scale_db(*rms_dbfs));
+                let scaled = Self::scale_db(*rms_dbfs);
+                self.push_level(scaled);
+                self.follow(scaled);
+
                 // Clipping outranks quietness: a clipped recording is already damaged, while
                 // a quiet one merely transcribes worse.
+                //
+                // Quietness is judged on the envelope with a dead band between the two
+                // thresholds, so the colour changes when the input genuinely changes rather
+                // than every time a syllable ends.
                 self.tone = if *clipping {
                     Tone::Clipping
-                } else if !*speech && *rms_dbfs < -45.0 {
+                } else if self.swell < self.quiet_enter {
                     Tone::Quiet
-                } else {
+                } else if self.swell > self.quiet_leave {
                     Tone::Normal
+                } else {
+                    self.tone
                 };
+                let _ = speech;
                 if self.phase == Phase::Listening {
                     self.status = match self.tone {
                         Tone::Clipping => "clipping".to_owned(),
@@ -540,41 +620,118 @@ mod tests {
         );
     }
 
+    /// Feed the same level repeatedly, as a real stream does, until the envelope settles.
+    fn hold(o: &mut Overlay, rms_dbfs: f32, clipping: bool, frames: usize) {
+        let now = Instant::now();
+        for _ in 0..frames {
+            o.apply(
+                &Event::Level {
+                    rms_dbfs,
+                    peak_dbfs: rms_dbfs + 6.0,
+                    speech: rms_dbfs > -45.0,
+                    clipping,
+                },
+                now,
+            );
+        }
+    }
+
     #[test]
     fn advice_disappears_with_the_problem_it_described() {
         let mut o = overlay();
-        let now = Instant::now();
         o.apply(
             &Event::RecordingStarted {
                 segment: 0,
                 pre_roll_ms: 500,
                 device: "m".to_owned(),
             },
-            now,
+            Instant::now(),
         );
         let healthy = o.detail.clone();
 
-        o.apply(
-            &Event::Level {
-                rms_dbfs: -58.0,
-                peak_dbfs: -52.0,
-                speech: false,
-                clipping: false,
-            },
-            now,
-        );
+        hold(&mut o, -58.0, false, 60);
         assert_eq!(o.detail, "move closer");
 
-        o.apply(
-            &Event::Level {
-                rms_dbfs: -18.0,
-                peak_dbfs: -10.0,
-                speech: true,
-                clipping: false,
-            },
-            now,
-        );
+        hold(&mut o, -18.0, false, 40);
         assert_eq!(o.detail, healthy, "the advice outlived the problem");
+    }
+
+    #[test]
+    fn one_quiet_moment_does_not_repaint_everything() {
+        // The complaint this fixes: ordinary speech dips between syllables, and judging each
+        // sample on its own made the whole instrument change colour several times a second.
+        let mut o = overlay();
+        hold(&mut o, -20.0, false, 40);
+        assert_eq!(o.tone, Tone::Normal);
+
+        hold(&mut o, -58.0, false, 2);
+        assert_eq!(
+            o.tone,
+            Tone::Normal,
+            "two quiet frames should change nothing"
+        );
+    }
+
+    #[test]
+    fn a_sustained_quiet_input_does_change_it() {
+        let mut o = overlay();
+        hold(&mut o, -20.0, false, 40);
+        hold(&mut o, -58.0, false, 120);
+        assert_eq!(o.tone, Tone::Quiet);
+    }
+
+    #[test]
+    fn between_the_thresholds_the_tone_holds_whatever_it_was() {
+        // The dead band. Without it, an input sitting near the boundary oscillates.
+        let mut loud = overlay();
+        hold(&mut loud, -20.0, false, 40);
+        hold(&mut loud, -46.0, false, 60);
+
+        let mut quiet = overlay();
+        hold(&mut quiet, -58.0, false, 120);
+        hold(&mut quiet, -46.0, false, 60);
+
+        assert_ne!(
+            loud.tone, quiet.tone,
+            "the same input should hold whichever state it arrived in"
+        );
+    }
+
+    #[test]
+    fn the_wave_travels_further_per_frame_when_you_speak() {
+        let mut quiet = overlay();
+        let mut loud = overlay();
+        hold(&mut loud, -8.0, false, 20);
+
+        let now = Instant::now();
+        let (before_quiet, before_loud) = (quiet.wave_phase, loud.wave_phase);
+        quiet.tick(now);
+        loud.tick(now);
+
+        let moved_quiet = quiet.wave_phase - before_quiet;
+        let moved_loud = loud.wave_phase - before_loud;
+        assert!(
+            moved_loud > moved_quiet * 2.0,
+            "speaking barely changed the motion: {moved_loud} vs {moved_quiet}"
+        );
+    }
+
+    #[test]
+    fn the_swell_rises_quickly_and_falls_slowly() {
+        // Water, not a switch.
+        let mut o = overlay();
+        hold(&mut o, -6.0, false, 10);
+        let risen = o.swell;
+        assert!(risen > 0.7, "attack too slow: {risen}");
+
+        for _ in 0..10 {
+            o.follow(0.0);
+        }
+        assert!(
+            o.swell > risen * 0.5,
+            "release too fast: {} from {risen}",
+            o.swell
+        );
     }
 
     #[test]
