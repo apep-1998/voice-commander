@@ -384,8 +384,15 @@ done
 }
 ```
 
+For something you can run right now that shows the whole thing — a live level meter and a
+per-callback progress list — see `examples/terminal-indicator.sh`:
+
+```sh
+./examples/terminal-indicator.sh
+```
+
 See [events.md](events.md) for everything available, including the per-callback progress
-events a richer indicator would use.
+events a richer indicator uses.
 
 ---
 

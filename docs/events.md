@@ -216,6 +216,28 @@ enough not to be in the way.
 
 ## A worked example
 
+`examples/terminal-indicator.sh` is a complete one — a live level meter while you speak, and a
+per-callback progress list while the pipeline runs, in about a hundred lines of shell. It is
+worth reading before writing a graphical one, because it does everything an overlay would have
+to do and has no more access to the daemon than you do:
+
+```
+* listening  (500ms of lookback)
+  ########............  -32.4 dBFS
+  stopped after 875ms (released)
+  ... 800ms to say more
+  saved 0.9s of audio
+  transcribing with openai...
+  o agent (command)          <- the whole plan, drawn before anything runs
+  o archive (command)
+  o clipboard (clipboard)
+  + transcribed 27 chars in 780ms
+  + clipboard  3ms           <- and each row resolving as it finishes
+  x archive  webhook unreachable
+  + agent  405ms
+  2 done, 1 failed, 0 skipped  (909ms)
+```
+
 A minimal bar indicator, in about as much code as it takes to read this sentence:
 
 ```sh
