@@ -1,10 +1,15 @@
 [Unit]
 Description=voice-commander push-to-talk daemon
 Documentation=https://github.com/apep-1998/voice-commander
-# The daemon needs the audio session, so it belongs to the graphical session rather than to
-# login. Starting before PipeWire means opening a device that is not there yet.
-After=graphical-session.target pipewire.service
-PartOf=graphical-session.target
+# Ordered after PipeWire, but not dependent on it: the daemon opens the device lazily on the
+# first recording, so it starts fine either way.
+#
+# Deliberately NOT tied to graphical-session.target. That target is only started by session
+# managers that do it explicitly — uwsm, or a desktop environment. A bare Hyprland leaves it
+# inactive, which means `WantedBy=graphical-session.target` never fires at login and
+# `PartOf=` stops the daemon the moment anything touches the target. Both were observed on a
+# real machine: the service was enabled, appeared healthy, and was simply never running.
+After=pipewire.service
 
 [Service]
 Type=simple
@@ -40,4 +45,6 @@ RestrictSUIDSGID=true
 RestrictRealtime=false
 
 [Install]
-WantedBy=graphical-session.target
+# default.target is reached by every user session, graphical or not. On a text-only login the
+# daemon starts and finds no microphone worth opening, which costs nothing.
+WantedBy=default.target

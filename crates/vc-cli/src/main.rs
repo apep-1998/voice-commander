@@ -14,6 +14,21 @@ use clap::{Parser, Subcommand};
 use vc_ipc::protocol::{Command as Cmd, Response};
 use vc_ipc::{Client, ClientError};
 
+/// Print a line, exiting quietly if the reader has gone away.
+///
+/// `println!` panics on a broken pipe, so `voice-commander status | head -2` ends in a
+/// backtrace rather than the two lines that were asked for. Every other Unix tool simply
+/// stops, and so should this.
+macro_rules! say {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let mut out = std::io::stdout();
+        if writeln!(out, $($arg)*).is_err() {
+            std::process::exit(0);
+        }
+    }};
+}
+
 /// How long to wait for the daemon. Generous for a local socket, and still short enough
 /// that a wedged daemon cannot leave a keybind hanging.
 const TIMEOUT: Duration = Duration::from_secs(2);
@@ -207,15 +222,15 @@ fn report(response: &Response, want_json: bool) {
         // anything on success would fill the journal with noise nobody reads.
         Response::Accepted { .. } => {}
         Response::Pong { version, protocol } => {
-            println!("voice-commanderd {version} (protocol v{protocol})");
+            say!("voice-commanderd {version} (protocol v{protocol})");
         }
         Response::Reloaded { warnings } => {
             if warnings.is_empty() {
-                println!("configuration reloaded");
+                say!("configuration reloaded");
             } else {
-                println!("configuration reloaded with {} warning(s):", warnings.len());
+                say!("configuration reloaded with {} warning(s):", warnings.len());
                 for warning in warnings {
-                    println!("  - {warning}");
+                    say!("  - {warning}");
                 }
             }
         }
@@ -228,7 +243,7 @@ fn report(response: &Response, want_json: bool) {
 fn print_status(status: &vc_ipc::DaemonStatus, want_json: bool) {
     if want_json {
         if let Ok(json) = serde_json::to_string_pretty(status) {
-            println!("{json}");
+            say!("{json}");
         }
         return;
     }
@@ -249,23 +264,26 @@ fn print_status(status: &vc_ipc::DaemonStatus, want_json: bool) {
         ActivityState::Processing => "processing".to_owned(),
     };
 
-    println!("voice-commanderd {}", status.version);
-    println!("  state:     {activity}");
-    println!("  uptime:    {}s", status.uptime_secs);
+    say!("voice-commanderd {}", status.version);
+    say!("  state:     {activity}");
+    say!("  uptime:    {}s", status.uptime_secs);
     match &status.device {
-        Some(device) => println!(
+        Some(device) => say!(
             "  device:    {} ({} Hz, {} ch, {}ms of pre-roll buffered)",
-            device.name, device.sample_rate, device.channels, device.pre_roll_available_ms
+            device.name,
+            device.sample_rate,
+            device.channels,
+            device.pre_roll_available_ms
         ),
-        None => println!("  device:    closed"),
+        None => say!("  device:    closed"),
     }
     if let Some(profile) = &status.profile {
-        println!("  profile:   {profile}");
+        say!("  profile:   {profile}");
     }
-    println!("  profiles:  {}", status.profiles.join(", "));
-    println!("  socket:    {}", status.socket.display());
+    say!("  profiles:  {}", status.profiles.join(", "));
+    say!("  socket:    {}", status.socket.display());
     if status.config_warnings > 0 {
-        println!(
+        say!(
             "  config:    {} warning(s) — run `voice-commander reload` to see them",
             status.config_warnings
         );
@@ -289,9 +307,9 @@ fn stats(days: Option<u32>, json: bool, data_dir: Option<PathBuf>) -> Result<(),
     }
 
     if sessions.is_empty() {
-        println!("no recordings found under {}", root.display());
+        say!("no recordings found under {}", root.display());
         if unreadable > 0 {
-            println!("({unreadable} file(s) could not be read)");
+            say!("({unreadable} file(s) could not be read)");
         }
         return Ok(());
     }
@@ -299,60 +317,63 @@ fn stats(days: Option<u32>, json: bool, data_dir: Option<PathBuf>) -> Result<(),
     let summary = vc_core::stats::Summary::from_sessions(&sessions);
 
     if json {
-        println!("{summary:#?}");
+        say!("{summary:#?}");
         return Ok(());
     }
 
-    println!("{} recordings", summary.sessions);
-    println!(
+    say!("{} recordings", summary.sessions);
+    say!(
         "  total audio:   {:.1} minutes",
         summary.total_audio_ms as f64 / 60_000.0
     );
-    println!(
+    say!(
         "  typical length: {:.1}s (longest {:.1}s)",
         summary.median_duration_ms as f64 / 1000.0,
         summary.longest_ms as f64 / 1000.0
     );
-    println!(
+    say!(
         "  continued:     {} ({}%)",
         summary.continued,
         summary.continued * 100 / summary.sessions.max(1)
     );
     if let Some(p90) = summary.resume_delay_p90() {
-        println!("     you press again within {p90}ms, 90% of the time");
+        say!("     you press again within {p90}ms, 90% of the time");
     }
     if let Some(p90) = summary.pre_roll_speech_p90() {
-        println!(
+        say!(
             "  speech caught before the keypress: up to {p90}ms (window is {}ms)",
             summary.configured_pre_roll_ms.unwrap_or(0)
         );
     }
     if summary.watchdog_stops > 0 {
-        println!("  cut off by the watchdog: {}", summary.watchdog_stops);
+        say!("  cut off by the watchdog: {}", summary.watchdog_stops);
     }
     if summary.transcribed + summary.transcription_failures > 0 {
-        println!(
+        say!(
             "  transcribed:   {} ({} failed, typically {}ms)",
-            summary.transcribed, summary.transcription_failures, summary.median_transcription_ms
+            summary.transcribed,
+            summary.transcription_failures,
+            summary.median_transcription_ms
         );
     }
     if summary.sink_runs > 0 {
-        println!(
+        say!(
             "  callbacks:     {} run, {} failed",
-            summary.sink_runs, summary.sink_failures
+            summary.sink_runs,
+            summary.sink_failures
         );
     }
     if unreadable > 0 {
-        println!("  ({unreadable} session file(s) could not be read)");
+        say!("  ({unreadable} session file(s) could not be read)");
     }
 
     let advice = summary.advice();
     if advice.is_empty() {
-        println!("\nnothing to suggest — either it is well tuned, or there is not enough data yet");
+        say!("\nnothing to suggest — either it is well tuned, or there is not enough data yet");
     } else {
-        println!("\nsuggestions:");
+        say!("\nsuggestions:");
         for entry in advice {
-            println!("  {}: {}", entry.setting, entry.message);
+            say!("  {}: {}", entry.setting, entry.message);
         }
     }
     Ok(())
@@ -411,17 +432,17 @@ fn config(command: ConfigCommand) -> Result<(), ClientError> {
                 eprintln!("writing {}: {error}", path.display());
                 std::process::exit(1);
             }
-            println!("wrote {}", path.display());
-            println!("everything in it is optional — delete what you do not want to change");
-            println!("then check it with `voice-commander config check`");
+            say!("wrote {}", path.display());
+            say!("everything in it is optional — delete what you do not want to change");
+            say!("then check it with `voice-commander config check`");
             Ok(())
         }
         ConfigCommand::Check { config_dir } => {
             let dir = config_dir.unwrap_or_else(vc_core::paths::config_dir);
             match vc_core::Config::load_from_dir(&dir) {
                 Ok(loaded) => {
-                    println!("{}: ok", dir.display());
-                    println!(
+                    say!("{}: ok", dir.display());
+                    say!(
                         "  profiles: {}",
                         loaded
                             .config
@@ -432,10 +453,10 @@ fn config(command: ConfigCommand) -> Result<(), ClientError> {
                             .join(", ")
                     );
                     for warning in &loaded.warnings {
-                        println!("  warning: {warning}");
+                        say!("  warning: {warning}");
                     }
                     if loaded.warnings.is_empty() {
-                        println!("  no warnings");
+                        say!("  no warnings");
                     }
                     Ok(())
                 }
@@ -450,7 +471,7 @@ fn config(command: ConfigCommand) -> Result<(), ClientError> {
             match vc_core::Config::load_from_dir(&dir) {
                 Ok(loaded) => {
                     match toml::to_string_pretty(&loaded.config) {
-                        Ok(text) => println!("{text}"),
+                        Ok(text) => say!("{text}"),
                         Err(error) => eprintln!("could not render the configuration: {error}"),
                     }
                     Ok(())
@@ -493,7 +514,7 @@ fn mic_test(
         None => profile.capture.device.clone(),
     };
 
-    println!("recording for {seconds}s — say something...");
+    say!("recording for {seconds}s — say something...");
     let report = match vc_audio::mic_test(
         &selector,
         loaded.config.audio.sample_rate,
@@ -507,30 +528,31 @@ fn mic_test(
         }
     };
 
-    println!();
-    println!("  device:  {}", report.device.name);
-    println!(
+    say!();
+    say!("  device:  {}", report.device.name);
+    say!(
         "  format:  {} Hz, {} channel(s)",
-        report.device.sample_rate, report.device.channels
+        report.device.sample_rate,
+        report.device.channels
     );
-    println!("  peak:    {:.1} dBFS", report.peak_dbfs);
-    println!("  average: {:.1} dBFS", report.mean_rms_dbfs);
-    println!(
+    say!("  peak:    {:.1} dBFS", report.peak_dbfs);
+    say!("  average: {:.1} dBFS", report.mean_rms_dbfs);
+    say!(
         "  speech:  {:.1}s of {:.1}s",
         report.speech_ms as f64 / 1000.0,
         report.duration.as_secs_f64()
     );
     if report.clipped_samples > 0 {
-        println!("  clipped: {} samples", report.clipped_samples);
+        say!("  clipped: {} samples", report.clipped_samples);
     }
     if report.dropped_samples > 0 {
-        println!(
+        say!(
             "  dropped: {} samples (this machine could not keep up)",
             report.dropped_samples
         );
     }
-    println!();
-    println!("{}", report.verdict());
+    say!();
+    say!("{}", report.verdict());
     Ok(())
 }
 

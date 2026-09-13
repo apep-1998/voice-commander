@@ -247,4 +247,5 @@ rm -rf ~/.local/share/voice-commander # your recordings
 | Two presses became two recordings | You were outside `cooldown_ms`. Raise it |
 | `no profile named …` | The error lists the profiles that do exist. Check `voice-commander status` |
 | Nothing in the journal | `VOICE_COMMANDER_LOG=debug voice-commanderd` |
+| The daemon is not running after login | `systemctl --user is-enabled voice-commander`. If it was enabled against `graphical-session.target`, that target is inactive under a bare Hyprland — re-run `./install.sh`, which now wants `default.target` |
 | Not sure what to tune | `voice-commander stats` — it reads your own recordings and says |
