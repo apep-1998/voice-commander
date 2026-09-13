@@ -80,6 +80,7 @@ journal, and several keybinds at once.
 | **[Configuration](docs/configuration.md)** | Every setting, what it does, and why it defaults where it does |
 | **[Recipes](docs/recipes.md)** | Ten copy-paste configurations |
 | **[Events](docs/events.md)** | The stream any indicator is built on — a versioned public contract |
+| **[Overlay](docs/overlay.md)** | The on-screen indicator, and every setting for it |
 
 ## Commands
 
@@ -91,6 +92,7 @@ voice-commander cancel                 # discard whatever is in flight
 voice-commander status                 # what the daemon is doing
 voice-commander events --follow        # the event stream, as newline-delimited JSON
 voice-commander mic-test               # record briefly and report what arrived
+voice-commander-overlay --demo         # watch the on-screen indicator, no microphone needed
 voice-commander stats                  # summarise your recordings and suggest settings
 voice-commander config init            # write a commented starter configuration
 voice-commander config check           # validate, reporting every problem at once
@@ -111,10 +113,15 @@ Feature-complete against the design, and in use.
 | Callbacks — all six kinds, with fan-out, retries and skip reasons | ✅ |
 | `stats`, retention, `config init`, packaging | ✅ |
 
-Deliberately deferred: the graphical overlay, a native PipeWire backend, and in-process
-Whisper. The event stream is a documented, versioned contract precisely so an indicator can be
-built against it later — by this project or by you. There is a working nine-line shell version
-at the end of [docs/events.md](docs/events.md).
+The overlay is a Wayland layer-shell window that reads the same event stream
+`voice-commander events --follow` does — it has no privileged access to the daemon, which was
+the point of publishing the contract. See it without a microphone:
+
+```sh
+voice-commander-overlay --demo
+```
+
+Deliberately deferred: a native PipeWire backend, and in-process Whisper.
 
 ## Development
 

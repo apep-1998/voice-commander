@@ -229,3 +229,38 @@ voice-commander events --follow | while read -r line; do
   esac
 done
 ```
+
+## The overlay
+
+`voice-commander-overlay` is a Wayland layer-shell window built on exactly this contract —
+no privileged channel, no extra API, the same lines you can read with `jq`. It is the proof
+that the contract is sufficient.
+
+```sh
+voice-commander-overlay --demo              # a scripted session, no microphone needed
+voice-commander-overlay                     # the real thing
+voice-commander-overlay --position centre   # bottom | top | centre | bottom-right | bottom-left
+voice-commander-overlay --size 180 --fps 30 # smaller and cheaper
+```
+
+It costs **0.2% of a core while hidden**, which is what matters for `exec-once`. While
+something is on screen it draws in software at the rate you ask for — about 30% of a core at
+60fps, half that at `--fps 30`, which is smooth enough for a level meter.
+
+| Event | What it draws |
+|---|---|
+| `recording_started` | The ring appears; the lookback figure goes under the clock |
+| `level` | One spike, newest at the top running clockwise — cyan for speech, dim for room tone |
+| `input_warning`, and a `level` below the speech floor | The whole instrument turns amber ("move closer") or red ("lower the input volume") |
+| `recording_stopped` with `reason: watchdog` | Red, and says the release keybind did not fire |
+| `cooldown_started` | A countdown arc, and "say more?" — it does **not** hide |
+| `recording_resumed` | Back to listening, naming the segment |
+| `pipeline_started` | The panel opens with every callback listed and dimmed |
+| `sink_finished` | That row resolves: `+` green, `x` red with the reason, `-` grey with the skip reason |
+| `pipeline_finished` | A summary, then it fades out |
+
+Add it to Hyprland with `exec-once = voice-commander-overlay`. It never takes keyboard focus
+and reserves no space, because dictation types into whatever window *is* focused.
+
+The font is Chakra Petch where it is installed (`pacman -S ttf-chakra-petch`), and falls back
+to whatever the system offers otherwise.

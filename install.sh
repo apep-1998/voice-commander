@@ -95,8 +95,9 @@ ${BOLD}Options${RESET}
   --help, -h       this
 
 ${BOLD}What gets installed${RESET}
-  PREFIX/bin/voice-commander       the client your keybind runs
-  PREFIX/bin/voice-commanderd      the daemon
+  PREFIX/bin/voice-commander         the client your keybind runs
+  PREFIX/bin/voice-commanderd        the daemon
+  PREFIX/bin/voice-commander-overlay the on-screen indicator
   ${UNIT_DIR#$HOME/}/voice-commander.service
   ${CONFIG_DIR#$HOME/}/config.toml   (only if you do not already have one)
 
@@ -279,7 +280,7 @@ if [ "$UNINSTALL" = 1 ]; then
     rm -f "${UNIT_DIR}/voice-commander.service"
     command -v systemctl >/dev/null 2>&1 && systemctl --user daemon-reload >/dev/null 2>&1 || true
 
-    for binary in voice-commander voice-commanderd; do
+    for binary in voice-commander voice-commanderd voice-commander-overlay; do
         if [ -e "${BIN_DIR}/${binary}" ]; then
             rm -f "${BIN_DIR}/${binary}"
             ok "removed ${BIN_DIR}/${binary}"
@@ -366,7 +367,7 @@ ok "built voice-commander and voice-commanderd"
 
 step "Installing to ${BIN_DIR}"
 mkdir -p "$BIN_DIR"
-for binary in voice-commander voice-commanderd; do
+for binary in voice-commander voice-commanderd voice-commander-overlay; do
     install -Dm755 "${REPO}/target/release/${binary}" "${BIN_DIR}/${binary}"
     ok "${BIN_DIR}/${binary}"
 done
@@ -450,6 +451,7 @@ step "Done"
 cat <<EOF
     Try it:
 
+      ${BOLD}voice-commander-overlay --demo${RESET}         see the overlay, no microphone needed
       ${BOLD}voice-commander mic-test${RESET}              check the microphone
       ${BOLD}voice-commander status${RESET}                what the daemon is doing
       ${BOLD}voice-commander events --follow${RESET}       watch it work, in another terminal

@@ -41,6 +41,7 @@ pub(super) fn check(config: &Config) -> Report {
     check_transcribers(config, &mut report);
     check_sinks(config, &mut report);
     check_presenters(config, &mut report);
+    check_overlay(config, &mut report);
     check_profiles(config, &mut report);
     check_unused(config, &mut report);
 
@@ -231,6 +232,93 @@ fn check_presenters(config: &Config, report: &mut Report) {
         report.error(
             Issue::new("feedback.level_interval_ms", "must be non-zero")
                 .with_hint("this throttles level events; 50 gives a smooth 20 per second"),
+        );
+    }
+}
+
+/// A mistyped colour or a nonsensical frame rate should be named, not painted.
+fn check_overlay(config: &Config, report: &mut Report) {
+    let overlay = &config.overlay;
+
+    for (key, hex) in [
+        ("hud", &overlay.colours.hud),
+        ("deep", &overlay.colours.deep),
+        ("dim", &overlay.colours.dim),
+        ("rule", &overlay.colours.rule),
+        ("warn", &overlay.colours.warn),
+        ("critical", &overlay.colours.critical),
+        ("ok", &overlay.colours.ok),
+        ("text", &overlay.colours.text),
+        ("text_dim", &overlay.colours.text_dim),
+        ("ground", &overlay.colours.ground),
+        ("panel_ground", &overlay.colours.panel_ground),
+    ] {
+        if hex.parse().is_none() {
+            report.error(
+                Issue::new(
+                    format!("overlay.colours.{key}"),
+                    format!("{:?} is not a colour", hex.0),
+                )
+                .with_hint("write it as #rrggbb, or #rrggbbaa to include opacity"),
+            );
+        }
+    }
+
+    if !(1..=240).contains(&overlay.fps) {
+        report.error(
+            Issue::new("overlay.fps", format!("{} is outside 1..=240", overlay.fps)).with_hint(
+                "60 matches most screens; 30 is smooth for a level meter and costs half as much",
+            ),
+        );
+    }
+
+    if overlay.size < 80 {
+        report.error(Issue::new(
+            "overlay.size",
+            format!("{}px is too small to read anything in", overlay.size),
+        ));
+    }
+
+    let motion = &overlay.motion;
+    if motion.quiet_leave_dbfs <= motion.quiet_enter_dbfs {
+        report.error(
+            Issue::new(
+                "overlay.motion.quiet_leave_dbfs",
+                "must be above quiet_enter_dbfs",
+            )
+            .with_hint(
+                "the gap between them is what stops the colour flipping back and forth as \
+                 ordinary speech crosses the threshold",
+            ),
+        );
+    }
+
+    for (key, value) in [("attack", motion.attack), ("release", motion.release)] {
+        if !(0.001..=1.0).contains(&value) {
+            report.error(Issue::new(
+                format!("overlay.motion.{key}"),
+                format!("{value} is outside 0.001..=1.0"),
+            ));
+        }
+    }
+
+    if motion.release > motion.attack {
+        report.warn(
+            Issue::new(
+                "overlay.motion.release",
+                "is slower to fall than to rise, which makes the ring lag behind the voice",
+            )
+            .with_hint("release is normally much smaller than attack"),
+        );
+    }
+
+    if overlay.geometry.wave_height > overlay.geometry.wave_base * 0.5 {
+        report.warn(
+            Issue::new(
+                "overlay.geometry.wave_height",
+                "is large relative to wave_base, so the swell will fold in over the readout",
+            )
+            .with_hint("keep it under about half of wave_base"),
         );
     }
 }
