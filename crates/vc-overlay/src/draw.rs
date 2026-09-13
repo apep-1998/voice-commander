@@ -66,6 +66,18 @@ impl Renderer {
     }
 
     pub(crate) fn draw(&mut self, pixmap: &mut Pixmap, overlay: &Overlay, now: Instant, spin: f32) {
+        self.geometry(pixmap, overlay, now, spin);
+        self.labels(pixmap, overlay, now);
+    }
+
+    /// Everything that is lines and arcs.
+    pub(crate) fn geometry(
+        &mut self,
+        pixmap: &mut Pixmap,
+        overlay: &Overlay,
+        now: Instant,
+        spin: f32,
+    ) {
         pixmap.fill(Color::TRANSPARENT);
 
         let cx = self.metrics.size as f32 / 2.0;
@@ -77,8 +89,13 @@ impl Renderer {
         self.arcs(pixmap, cx, cy, spin, overlay);
         self.cooldown(pixmap, cx, cy, overlay, now);
         self.waveform(pixmap, cx, cy, overlay);
-        self.readout(pixmap, cx, cy, overlay, now);
+    }
 
+    /// Everything that is text.
+    pub(crate) fn labels(&mut self, pixmap: &mut Pixmap, overlay: &Overlay, now: Instant) {
+        let cx = self.metrics.size as f32 / 2.0;
+        let cy = self.metrics.size as f32 / 2.0;
+        self.readout(pixmap, cx, cy, overlay, now);
         if !overlay.rows.is_empty() {
             self.panel(pixmap, overlay);
         }
@@ -111,14 +128,21 @@ impl Renderer {
         }
 
         if !overlay.rows.is_empty() {
+            // Spans the whole panel. An earlier version stopped short of the right edge and
+            // left a strip of desktop showing through beside the text.
+            let mut panel = Paint::default();
+            panel.set_color(self.theme.panel_ground);
+            panel.anti_alias = true;
+
+            let left = self.metrics.size as f32 - 4.0;
             let rect = Rect::from_xywh(
-                self.metrics.size as f32 - 4.0,
-                28.0,
-                PANEL_WIDTH as f32 - 16.0,
-                self.metrics.size as f32 - 56.0,
+                left,
+                24.0,
+                PANEL_WIDTH as f32 - 4.0,
+                self.metrics.size as f32 - 48.0,
             );
             if let Some(rect) = rect {
-                pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+                pixmap.fill_rect(rect, &panel, Transform::identity(), None);
             }
         }
     }
@@ -139,21 +163,28 @@ impl Renderer {
     fn brackets(&self, pixmap: &mut Pixmap, cx: f32, cy: f32) {
         let r = self.metrics.bracket;
         let s = 13.0;
+        let mut pb = PathBuilder::new();
         for (sx, sy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
             let x = cx + sx * r;
             let y = cy + sy * r;
-            let mut pb = PathBuilder::new();
             pb.move_to(x - sx * s, y);
             pb.line_to(x, y);
             pb.line_to(x, y - sy * s);
-            if let Some(path) = pb.finish() {
-                self.stroke_path(pixmap, &path, self.theme.rule, 1.0);
-            }
+        }
+        if let Some(path) = pb.finish() {
+            self.stroke_path(pixmap, &path, self.theme.rule, 1.0);
         }
     }
 
     /// Graduations, with a longer mark every quarter, as on an instrument bezel.
+    ///
+    /// Batched into two paths rather than sixty. Every `stroke_path` sets up a paint and runs
+    /// its own anti-aliasing pass, and at sixty of them a frame that is most of the drawing
+    /// budget on a downclocked core.
     fn ticks(&self, pixmap: &mut Pixmap, cx: f32, cy: f32) {
+        let mut minor = PathBuilder::new();
+        let mut major = PathBuilder::new();
+
         for i in 0..60 {
             let a = (i as f32 / 60.0) * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
             let cardinal = i % 15 == 0;
@@ -162,20 +193,19 @@ impl Renderer {
             } else {
                 self.metrics.tick_outer
             };
-            let mut pb = PathBuilder::new();
-            pb.move_to(
+            let into = if cardinal { &mut major } else { &mut minor };
+            into.move_to(
                 cx + a.cos() * self.metrics.tick_inner,
                 cy + a.sin() * self.metrics.tick_inner,
             );
-            pb.line_to(cx + a.cos() * outer, cy + a.sin() * outer);
-            if let Some(path) = pb.finish() {
-                let colour = if cardinal {
-                    self.theme.deep
-                } else {
-                    self.theme.rule
-                };
-                self.stroke_path(pixmap, &path, colour, if cardinal { 1.4 } else { 1.0 });
-            }
+            into.line_to(cx + a.cos() * outer, cy + a.sin() * outer);
+        }
+
+        if let Some(path) = minor.finish() {
+            self.stroke_path(pixmap, &path, self.theme.rule, 1.0);
+        }
+        if let Some(path) = major.finish() {
+            self.stroke_path(pixmap, &path, self.theme.deep, 1.4);
         }
     }
 
@@ -264,15 +294,34 @@ impl Renderer {
     /// Spikes radiating from the centre, newest at the top running clockwise — so the shape
     /// is the last few seconds of the user's voice.
     fn waveform(&self, pixmap: &mut Pixmap, cx: f32, cy: f32, overlay: &Overlay) {
+        // Spikes are grouped by how they will be painted — speech or room tone, and one of a
+        // few opacity steps — so seventy-two strokes become about a dozen. The fade is still
+        // a fade; it just has steps fine enough that nobody can count them.
+        const FADE_STEPS: usize = 6;
         let accent = self.accent(overlay);
         let bars = overlay.levels.len();
+
+        let mut batches: Vec<(PathBuilder, bool, usize)> = (0..FADE_STEPS)
+            .flat_map(|step| {
+                [
+                    (PathBuilder::new(), true, step),
+                    (PathBuilder::new(), false, step),
+                ]
+            })
+            .collect();
+
         for i in 0..bars {
             let idx = (overlay.head + bars - i) % bars;
             let v = overlay.levels[idx];
             let a = (i as f32 / bars as f32) * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
             let len = 2.0 + v * self.metrics.wave_max;
 
-            let mut pb = PathBuilder::new();
+            let age = 1.0 - i as f32 / bars as f32;
+            let step = ((age * FADE_STEPS as f32) as usize).min(FADE_STEPS - 1);
+            let loud = v > 0.12;
+            let slot = step * 2 + usize::from(!loud);
+
+            let pb = &mut batches[slot].0;
             pb.move_to(
                 cx + a.cos() * self.metrics.wave_base,
                 cy + a.sin() * self.metrics.wave_base,
@@ -281,13 +330,14 @@ impl Renderer {
                 cx + a.cos() * (self.metrics.wave_base + len),
                 cy + a.sin() * (self.metrics.wave_base + len),
             );
-            if let Some(path) = pb.finish() {
-                // Fade with age, so the most recent spikes are the brightest.
-                let age = 1.0 - i as f32 / bars as f32;
-                let mut colour = if v > 0.12 { accent } else { self.theme.dim };
-                colour.set_alpha(0.18 + age * 0.82);
-                self.stroke_path(pixmap, &path, colour, 2.0);
-            }
+        }
+
+        for (pb, loud, step) in batches {
+            let Some(path) = pb.finish() else { continue };
+            let mut colour = if loud { accent } else { self.theme.dim };
+            let age = (step as f32 + 0.5) / FADE_STEPS as f32;
+            colour.set_alpha(0.18 + age * 0.82);
+            self.stroke_path(pixmap, &path, colour, 2.0);
         }
     }
 

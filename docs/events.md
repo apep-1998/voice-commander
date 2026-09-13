@@ -239,8 +239,13 @@ that the contract is sufficient.
 ```sh
 voice-commander-overlay --demo              # a scripted session, no microphone needed
 voice-commander-overlay                     # the real thing
-voice-commander-overlay --position top --size 200 --margin 40
+voice-commander-overlay --position centre   # bottom | top | centre | bottom-right | bottom-left
+voice-commander-overlay --size 180 --fps 30 # smaller and cheaper
 ```
+
+It costs **0.2% of a core while hidden**, which is what matters for `exec-once`. While
+something is on screen it draws in software at the rate you ask for — about 30% of a core at
+60fps, half that at `--fps 30`, which is smooth enough for a level meter.
 
 | Event | What it draws |
 |---|---|

@@ -10,8 +10,11 @@ fn rgb(r: u8, g: u8, b: u8) -> Color {
 }
 
 pub(crate) struct Theme {
-    /// The panel ground. Translucent: a HUD floats over the desktop, it does not cover it.
+    /// Behind the ring. Translucent: a HUD floats over the desktop, it does not cover it.
     pub ground: Color,
+    /// Behind the callback list. Opaque, unlike the ring's ground: this one carries
+    /// 13px text, and a bright window showing through behind it is simply unreadable.
+    pub panel_ground: Color,
     /// The primary instrument colour.
     pub hud: Color,
     /// Brighter cardinal graduations and secondary arcs.
@@ -34,6 +37,7 @@ impl Default for Theme {
     fn default() -> Self {
         Self {
             ground: Color::from_rgba8(5, 8, 12, 210),
+            panel_ground: Color::from_rgba8(6, 10, 15, 255),
             // Not pure cyan: #00ffff reads as generic neon. Pulled toward sky and
             // desaturated, it reads as an instrument.
             hud: rgb(0x58, 0xd7, 0xff),
